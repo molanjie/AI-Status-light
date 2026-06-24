@@ -1,0 +1,736 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#050509">
+  <title>Codex 红绿灯</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #050509;
+      --ink: #f7f7fa;
+      --muted: #8d919d;
+      --line: rgba(255, 255, 255, .13);
+      --panel: rgba(20, 21, 28, .72);
+      --red: #ff453a;
+      --yellow: #ffd60a;
+      --green: #30d158;
+      --cyan: #64d2ff;
+      --orange: #ff9f0a;
+      --off: #24262d;
+    }
+
+    * {
+      box-sizing: border-box;
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    html,
+    body {
+      width: 100%;
+      min-height: 100%;
+      margin: 0;
+      overflow: hidden;
+      background:
+        radial-gradient(circle at 18% 8%, rgba(100, 210, 255, .11), transparent 34%),
+        radial-gradient(circle at 86% 18%, rgba(48, 209, 88, .12), transparent 30%),
+        linear-gradient(180deg, #0d0d12 0%, var(--bg) 58%, #020203 100%);
+      color: var(--ink);
+      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei UI", sans-serif;
+    }
+
+    body {
+      height: 100dvh;
+      padding:
+        max(14px, env(safe-area-inset-top))
+        max(14px, env(safe-area-inset-right))
+        max(14px, env(safe-area-inset-bottom))
+        max(14px, env(safe-area-inset-left));
+    }
+
+    .app {
+      width: min(100%, 980px);
+      height: 100%;
+      margin: 0 auto;
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr) auto;
+      gap: clamp(12px, 2.4vh, 20px);
+    }
+
+    header {
+      min-height: 44px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .brand {
+      min-width: 0;
+      display: grid;
+      gap: 2px;
+    }
+
+    .brand strong {
+      font-size: clamp(17px, 4.2vw, 23px);
+      line-height: 1.05;
+      font-weight: 820;
+    }
+
+    .brand span,
+    .hint,
+    .metric {
+      color: var(--muted);
+      font-size: clamp(12px, 3.2vw, 14px);
+    }
+
+    .brand span {
+      max-width: min(62vw, 520px);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .pill {
+      min-height: 34px;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 0 13px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: rgba(255, 255, 255, .055);
+      font-size: 13px;
+      font-weight: 720;
+      white-space: nowrap;
+    }
+
+    .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #70727b;
+    }
+
+    .online .dot {
+      background: var(--green);
+      box-shadow: 0 0 18px rgba(48, 209, 88, .72);
+    }
+
+    main {
+      min-height: 0;
+      display: grid;
+      place-items: center;
+    }
+
+    .status-grid {
+      width: 100%;
+      min-height: 0;
+      display: grid;
+      align-items: center;
+      grid-template-columns: minmax(260px, 1.1fr) minmax(220px, .9fr);
+      gap: clamp(18px, 5vw, 54px);
+    }
+
+    .stage {
+      display: grid;
+      justify-items: end;
+    }
+
+    .lightbar {
+      position: relative;
+      width: min(56vw, 470px);
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: clamp(10px, 2.2vw, 16px);
+      padding: clamp(14px, 2.6vw, 20px);
+      border: 1px solid rgba(255, 255, 255, .16);
+      border-radius: 28px;
+      background:
+        linear-gradient(180deg, rgba(255, 255, 255, .1), rgba(255, 255, 255, 0) 22%),
+        linear-gradient(180deg, #1b1c23, #07070a);
+      box-shadow:
+        inset 0 1px 0 rgba(255, 255, 255, .2),
+        inset 0 -24px 48px rgba(0, 0, 0, .5),
+        0 28px 90px rgba(0, 0, 0, .58);
+    }
+
+    .light {
+      position: relative;
+      aspect-ratio: 1;
+      border-radius: 50%;
+      background:
+        radial-gradient(circle at 34% 28%, rgba(255, 255, 255, .09), transparent 18%),
+        var(--off);
+      box-shadow:
+        inset 0 12px 24px rgba(255, 255, 255, .08),
+        inset 0 -20px 36px rgba(0, 0, 0, .76);
+      transform: scale(.95);
+      transition: transform .16s ease, filter .16s ease, background .16s ease, box-shadow .16s ease;
+    }
+
+    .light::after {
+      content: "";
+      position: absolute;
+      inset: 14%;
+      border-radius: 50%;
+      border: 1px solid rgba(255, 255, 255, .08);
+    }
+
+    .active {
+      transform: scale(1);
+      filter: saturate(1.16);
+    }
+
+    .red.active {
+      background: radial-gradient(circle at 34% 26%, #fff3f0 0 7%, #ffaea7 14%, var(--red) 46%, #7a0705 100%);
+      box-shadow: 0 0 34px rgba(255, 69, 58, .36), 0 0 92px rgba(255, 69, 58, .34), inset 0 -22px 42px rgba(0, 0, 0, .36);
+    }
+
+    .yellow.active {
+      background: radial-gradient(circle at 34% 26%, #fffbe6 0 7%, #ffed7a 14%, var(--yellow) 48%, #7c5e00 100%);
+      box-shadow: 0 0 34px rgba(255, 214, 10, .34), 0 0 92px rgba(255, 214, 10, .3), inset 0 -22px 42px rgba(0, 0, 0, .34);
+    }
+
+    .green.active {
+      background: radial-gradient(circle at 34% 26%, #effff1 0 7%, #98ffaa 14%, var(--green) 48%, #075b22 100%);
+      box-shadow: 0 0 34px rgba(48, 209, 88, .34), 0 0 92px rgba(48, 209, 88, .3), inset 0 -22px 42px rgba(0, 0, 0, .34);
+    }
+
+    body[data-state="working"] .lightbar {
+      animation: breathe 2.4s ease-in-out infinite alternate;
+    }
+
+    body[data-state="error"] .red.active {
+      animation: alert .8s ease-in-out infinite alternate;
+    }
+
+    body[data-state="permission"] .yellow.active {
+      animation: attention 1.05s ease-in-out infinite alternate;
+    }
+
+    .readout {
+      min-width: 0;
+      display: grid;
+      gap: 12px;
+      justify-items: start;
+    }
+
+    .state-text {
+      font-size: clamp(42px, 9vw, 78px);
+      line-height: .95;
+      font-weight: 880;
+      letter-spacing: 0;
+    }
+
+    .detail {
+      min-height: 24px;
+      color: var(--muted);
+      font-size: clamp(16px, 3.4vw, 20px);
+      font-weight: 650;
+    }
+
+    .metrics {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .metric {
+      padding: 8px 10px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: rgba(255, 255, 255, .05);
+    }
+
+    .controls {
+      display: grid;
+      gap: 10px;
+      padding: 10px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+      backdrop-filter: blur(16px);
+    }
+
+    .row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto auto;
+      gap: 8px;
+      align-items: center;
+    }
+
+    input,
+    button,
+    a.button {
+      height: 42px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: rgba(255, 255, 255, .07);
+      color: var(--ink);
+      font: inherit;
+      font-size: 14px;
+      font-weight: 700;
+    }
+
+    input {
+      min-width: 0;
+      padding: 0 12px;
+      outline: none;
+      font-weight: 560;
+    }
+
+    button,
+    a.button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0 14px;
+      cursor: pointer;
+      text-decoration: none;
+      white-space: nowrap;
+    }
+
+    .primary {
+      border-color: rgba(100, 210, 255, .45);
+      background: rgba(100, 210, 255, .14);
+    }
+
+    .on {
+      border-color: rgba(48, 209, 88, .46);
+      background: rgba(48, 209, 88, .14);
+    }
+
+    .notice {
+      display: none;
+      padding: 10px;
+      border: 1px solid rgba(255, 159, 10, .38);
+      border-radius: 8px;
+      color: #ffd79a;
+      background: rgba(255, 159, 10, .1);
+      font-size: 13px;
+      line-height: 1.45;
+    }
+
+    .notice.show {
+      display: block;
+    }
+
+    @keyframes breathe {
+      from { box-shadow: inset 0 1px 0 rgba(255,255,255,.2), inset 0 -24px 48px rgba(0,0,0,.5), 0 28px 90px rgba(0,0,0,.58); }
+      to { box-shadow: inset 0 1px 0 rgba(255,255,255,.24), inset 0 -24px 48px rgba(0,0,0,.5), 0 28px 96px rgba(48,209,88,.2); }
+    }
+
+    @keyframes alert {
+      from { filter: brightness(.86) saturate(1.1); }
+      to { filter: brightness(1.28) saturate(1.24); }
+    }
+
+    @keyframes attention {
+      from { filter: brightness(.94) saturate(1.06); }
+      to { filter: brightness(1.2) saturate(1.18); }
+    }
+
+    @media (orientation: portrait), (max-width: 720px) {
+      .app {
+        width: min(100%, 560px);
+      }
+
+      .status-grid {
+        grid-template-columns: 1fr;
+        align-content: center;
+        gap: clamp(22px, 5vh, 42px);
+        transform: translateY(-2vh);
+      }
+
+      .stage,
+      .readout {
+        justify-items: center;
+        text-align: center;
+      }
+
+      .lightbar {
+        width: min(84vw, 430px);
+      }
+
+      .row {
+        grid-template-columns: 1fr 1fr;
+      }
+
+      input {
+        grid-column: 1 / -1;
+      }
+
+      .state-text {
+        font-size: clamp(44px, 14vw, 70px);
+      }
+    }
+
+    @media (max-height: 560px) and (orientation: landscape) {
+      body {
+        padding-top: 8px;
+        padding-bottom: 8px;
+      }
+
+      .lightbar {
+        width: min(52vw, 390px);
+      }
+
+      .state-text {
+        font-size: clamp(38px, 12vh, 58px);
+      }
+
+      .controls {
+        padding: 8px;
+      }
+    }
+  </style>
+</head>
+<body data-state="idle">
+  <div class="app">
+    <header>
+      <div class="brand">
+        <strong>Codex 红绿灯</strong>
+        <span id="hostLabel">等待连接</span>
+      </div>
+      <div id="netPill" class="pill"><span class="dot"></span><span id="netText">离线</span></div>
+    </header>
+
+    <main>
+      <section class="status-grid" aria-label="Codex status">
+        <div class="stage">
+          <div class="lightbar" aria-hidden="true">
+            <div id="red" class="light red"></div>
+            <div id="yellow" class="light yellow"></div>
+            <div id="green" class="light green active"></div>
+          </div>
+        </div>
+
+        <div class="readout">
+          <div id="stateText" class="state-text">空闲</div>
+          <div id="detailText" class="detail">绿灯常亮</div>
+          <div class="metrics">
+            <span id="latencyText" class="metric">延时 --</span>
+            <span id="lastText" class="metric">尚未同步</span>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="controls">
+      <div id="notice" class="notice"></div>
+      <div class="row">
+        <input id="serverInput" inputmode="url" autocomplete="off" spellcheck="false" aria-label="服务器地址">
+        <button id="connectBtn" class="primary" type="button">连接</button>
+        <button id="realtimeBtn" class="on" type="button">实时开</button>
+      </div>
+      <div class="row">
+        <a id="directLink" class="button" href="#" target="_blank" rel="noopener">本机直连</a>
+        <button id="wakeBtn" type="button">常亮</button>
+        <button id="idleBtn" type="button">绿灯</button>
+      </div>
+      <div class="hint">建议手机和电脑在同一 Wi-Fi；若当前页面是 HTTPS，请用“本机直连”打开局域网地址。</div>
+    </footer>
+  </div>
+
+  <script>
+    const els = {
+      lights: {
+        red: document.getElementById('red'),
+        yellow: document.getElementById('yellow'),
+        green: document.getElementById('green'),
+      },
+      host: document.getElementById('hostLabel'),
+      netPill: document.getElementById('netPill'),
+      netText: document.getElementById('netText'),
+      state: document.getElementById('stateText'),
+      detail: document.getElementById('detailText'),
+      latency: document.getElementById('latencyText'),
+      last: document.getElementById('lastText'),
+      notice: document.getElementById('notice'),
+      input: document.getElementById('serverInput'),
+      connect: document.getElementById('connectBtn'),
+      realtime: document.getElementById('realtimeBtn'),
+      direct: document.getElementById('directLink'),
+      wake: document.getElementById('wakeBtn'),
+      idle: document.getElementById('idleBtn'),
+    };
+
+    const STORAGE_KEY = 'codex-light-server';
+    const DEFAULT_SERVER = 'http://192.168.31.194:3001';
+    const cycleOrder = ['red', 'yellow', 'green'];
+    const errorSignals = new Set(['error', 'failed', 'failure']);
+    const permissionSignals = new Set(['permission']);
+    const interruptSignals = new Set(['interrupted', 'interrupt', 'blocked']);
+    const attentionSignals = new Set(['attention', 'done']);
+    const workingSignals = new Set(['working', 'thinking', 'tool_done']);
+
+    let ws = null;
+    let cycleTimer = null;
+    let cycleIndex = 0;
+    let reconnectTimer = null;
+    let pingTimer = null;
+    let pollTimer = null;
+    let lastPingAt = 0;
+    let realtime = true;
+    let wakeLock = null;
+    let serverBase = '';
+
+    function param(name) {
+      return new URLSearchParams(location.search).get(name);
+    }
+
+    function normalizeServer(value) {
+      let next = String(value || '').trim();
+      if (!next) return '';
+      if (!/^https?:\/\//i.test(next)) next = `http://${next}`;
+      return next.replace(/\/+$/, '');
+    }
+
+    function initialServer() {
+      return normalizeServer(param('server') || localStorage.getItem(STORAGE_KEY) || DEFAULT_SERVER);
+    }
+
+    function wsFromBase(base) {
+      return `${base.replace(/^http/i, 'ws')}/api/ws`;
+    }
+
+    function setOnline(online) {
+      els.netPill.classList.toggle('online', online);
+      els.netText.textContent = online ? '实时' : '离线';
+    }
+
+    function showNotice(text) {
+      els.notice.textContent = text || '';
+      els.notice.classList.toggle('show', Boolean(text));
+    }
+
+    function updateServerUi() {
+      els.input.value = serverBase;
+      els.host.textContent = serverBase || '等待连接';
+      els.direct.href = serverBase ? `${serverBase}/phone` : '#';
+      if (location.protocol === 'https:' && serverBase.startsWith('http://')) {
+        showNotice('当前页面是 HTTPS，手机浏览器会阻止它连接 HTTP 局域网服务。请点“本机直连”，或用 Android App 访问。');
+      } else {
+        showNotice('');
+      }
+    }
+
+    function activate(name) {
+      Object.entries(els.lights).forEach(([key, node]) => node.classList.toggle('active', key === name));
+    }
+
+    function stopCycle() {
+      if (cycleTimer) clearInterval(cycleTimer);
+      cycleTimer = null;
+    }
+
+    function startCycle() {
+      if (cycleTimer) return;
+      cycleIndex = 0;
+      activate(cycleOrder[cycleIndex]);
+      cycleTimer = setInterval(() => {
+        cycleIndex = (cycleIndex + 1) % cycleOrder.length;
+        activate(cycleOrder[cycleIndex]);
+      }, 850);
+    }
+
+    function classify(aggregate, signal) {
+      const agg = aggregate || 'idle';
+      const sig = signal || agg;
+      if (permissionSignals.has(sig)) return 'permission';
+      if (errorSignals.has(sig)) return 'error';
+      if (interruptSignals.has(sig) || agg === 'blocked') return 'interrupted';
+      if (workingSignals.has(sig) || agg === 'working') return 'working';
+      if (attentionSignals.has(sig) || agg === 'attention') return 'attention';
+      return 'idle';
+    }
+
+    function copyFor(state) {
+      if (state === 'working') return ['正在工作', '红黄绿循环亮起'];
+      if (state === 'permission') return ['需要确认', '黄灯提醒'];
+      if (state === 'error') return ['运行出错', '红灯闪烁'];
+      if (state === 'interrupted') return ['已中断', '红灯提醒'];
+      if (state === 'attention') return ['需要关注', '黄灯提醒'];
+      return ['空闲', '绿灯常亮'];
+    }
+
+    function applyState(aggregate, signal) {
+      const state = classify(aggregate, signal);
+      document.body.dataset.state = state;
+      const [title, detail] = copyFor(state);
+      els.state.textContent = title;
+      els.detail.textContent = detail;
+      els.last.textContent = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+
+      if (state === 'working') {
+        startCycle();
+        return;
+      }
+      stopCycle();
+      if (state === 'permission' || state === 'attention') activate('yellow');
+      else if (state === 'error' || state === 'interrupted') activate('red');
+      else activate('green');
+    }
+
+    function bestSignalFromSessions(sessions) {
+      const values = Object.values(sessions || {}).map(item => item && item.signal).filter(Boolean);
+      for (const signal of ['permission', 'error', 'failed', 'failure', 'interrupted', 'interrupt', 'blocked', 'working', 'thinking', 'tool_done', 'attention', 'done']) {
+        if (values.includes(signal)) return signal;
+      }
+      return values[0] || null;
+    }
+
+    async function loadState() {
+      if (!serverBase) return;
+      try {
+        const res = await fetch(`${serverBase}/api/signal-light/state`, { cache: 'no-store', mode: 'cors' });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        applyState(data.aggregate, bestSignalFromSessions(data.sessions) || data.aggregate);
+      } catch {
+        setOnline(false);
+      }
+    }
+
+    function closeWs() {
+      clearTimeout(reconnectTimer);
+      clearInterval(pingTimer);
+      pingTimer = null;
+      if (ws) {
+        try { ws.close(); } catch {}
+      }
+      ws = null;
+    }
+
+    function connect() {
+      if (!realtime || !serverBase) return;
+      if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
+      clearTimeout(reconnectTimer);
+      clearInterval(pingTimer);
+
+      try {
+        ws = new WebSocket(wsFromBase(serverBase));
+      } catch {
+        setOnline(false);
+        return;
+      }
+
+      ws.addEventListener('open', () => {
+        setOnline(true);
+        ws.send(JSON.stringify({
+          type: 'page_change',
+          page: { id: 'public_codex_light', name: 'Codex Light' },
+          ts: Date.now(),
+        }));
+        loadState();
+        pingTimer = setInterval(() => {
+          if (ws && ws.readyState === WebSocket.OPEN) {
+            lastPingAt = performance.now();
+            ws.send(JSON.stringify({ type: 'ping', ts: Date.now() }));
+          }
+        }, 5000);
+      });
+
+      ws.addEventListener('message', event => {
+        try {
+          const msg = JSON.parse(event.data);
+          if (msg.type === 'pong' && lastPingAt) {
+            els.latency.textContent = `延时 ${Math.max(1, Math.round(performance.now() - lastPingAt))}ms`;
+            return;
+          }
+          if (msg.type === 'signal_light') {
+            if (typeof msg.ts === 'number') {
+              const drift = Math.max(0, Date.now() - msg.ts);
+              els.latency.textContent = `反馈 ${drift}ms`;
+            }
+            applyState(msg.aggregate, msg.signal);
+          }
+        } catch {}
+      });
+
+      ws.addEventListener('close', () => {
+        clearInterval(pingTimer);
+        pingTimer = null;
+        setOnline(false);
+        if (realtime) reconnectTimer = setTimeout(connect, 700);
+      });
+
+      ws.addEventListener('error', () => setOnline(false));
+    }
+
+    function startPolling() {
+      clearInterval(pollTimer);
+      pollTimer = setInterval(loadState, 1200);
+    }
+
+    function saveAndConnect() {
+      const next = normalizeServer(els.input.value);
+      if (!next) return;
+      serverBase = next;
+      localStorage.setItem(STORAGE_KEY, serverBase);
+      updateServerUi();
+      closeWs();
+      loadState();
+      connect();
+    }
+
+    els.connect.addEventListener('click', saveAndConnect);
+    els.input.addEventListener('keydown', event => {
+      if (event.key === 'Enter') saveAndConnect();
+    });
+
+    els.realtime.addEventListener('click', () => {
+      realtime = !realtime;
+      els.realtime.textContent = realtime ? '实时开' : '实时关';
+      els.realtime.classList.toggle('on', realtime);
+      if (realtime) {
+        loadState();
+        connect();
+      } else {
+        closeWs();
+        setOnline(false);
+      }
+    });
+
+    els.wake.addEventListener('click', async () => {
+      try {
+        if (wakeLock) {
+          await wakeLock.release();
+          wakeLock = null;
+          els.wake.textContent = '常亮';
+          els.wake.classList.remove('on');
+          return;
+        }
+        if ('wakeLock' in navigator) {
+          wakeLock = await navigator.wakeLock.request('screen');
+          els.wake.textContent = '常亮中';
+          els.wake.classList.add('on');
+          wakeLock.addEventListener('release', () => {
+            wakeLock = null;
+            els.wake.textContent = '常亮';
+            els.wake.classList.remove('on');
+          });
+        }
+      } catch {}
+    });
+
+    els.idle.addEventListener('click', () => applyState('idle', 'off'));
+
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') {
+        loadState();
+        connect();
+      }
+    });
+
+    serverBase = initialServer();
+    updateServerUi();
+    applyState('idle', 'off');
+    loadState();
+    connect();
+    startPolling();
+  </script>
+</body>
+</html>

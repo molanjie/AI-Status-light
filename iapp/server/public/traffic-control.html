@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Mini Watch Control</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      background: #0b0b0b;
+      color: #fff;
+      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    main {
+      width: min(92vw, 420px);
+      display: grid;
+      gap: 14px;
+    }
+    h1 {
+      margin: 0 0 8px;
+      font-size: 22px;
+      letter-spacing: 0;
+    }
+    button, a {
+      width: 100%;
+      min-height: 56px;
+      border: 0;
+      border-radius: 10px;
+      color: #111;
+      font-size: 18px;
+      font-weight: 800;
+      text-decoration: none;
+      display: grid;
+      place-items: center;
+    }
+    .red { background: #ff4040; }
+    .yellow { background: #ffd447; }
+    .green { background: #2df073; }
+    .blue { background: #8bd3ff; }
+    .dark { background: #f4f4f4; }
+    #msg { min-height: 24px; color: #aaa; font-size: 14px; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Mini Watch 控制</h1>
+    <button class="blue" data-signal="working">工作中：红黄绿循环</button>
+    <button class="green" data-signal="off">空闲：绿灯</button>
+    <button class="yellow" data-signal="attention">提醒：黄灯</button>
+    <button class="red" data-signal="permission">权限确认：红点</button>
+    <button class="red" data-signal="interrupted">中断：红点</button>
+    <button class="red" data-signal="error">出错：红点</button>
+    <a class="dark" href="/traffic-light.html">打开展示页</a>
+    <div id="msg"></div>
+  </main>
+  <script>
+    const msg = document.getElementById('msg');
+    function apiBase() {
+      if (location.port === '3000') return `${location.protocol}//${location.hostname}:3001`;
+      return '';
+    }
+    async function setSignal(signal) {
+      const res = await fetch(`${apiBase()}/api/signal-light/state`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ signal, session_id: 'codex' }),
+      });
+      const data = await res.json();
+      msg.textContent = `当前状态：${data.aggregate}`;
+    }
+    document.querySelectorAll('button[data-signal]').forEach(button => {
+      button.addEventListener('click', () => setSignal(button.dataset.signal).catch(err => {
+        msg.textContent = String(err);
+      }));
+    });
+  </script>
+</body>
+</html>

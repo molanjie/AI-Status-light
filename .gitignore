@@ -1,0 +1,45 @@
+# Dependencies
+node_modules/
+.venv/
+venv/
+env/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+*.egg
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Env files
+.env
+.env.local
+.env.production
+
+# Logs
+*.log
+logs/
+
+# Build output
+dist-electron/
+release/
+
+# Android
+.gradle/
+.tools/
+local.properties
+*.apk
+*.aab
+*.jks
+*.keystore
