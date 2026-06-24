@@ -1,0 +1,1031 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#050505">
+  <meta http-equiv="Cache-Control" content="no-store, max-age=0">
+  <meta http-equiv="Pragma" content="no-cache">
+  <title>Codex 红绿灯</title>
+  <script>
+    (() => {
+      const root = document.documentElement;
+      const setViewport = () => {
+        const viewport = window.visualViewport;
+        root.style.setProperty('--app-h', `${Math.round(viewport?.height || window.innerHeight)}px`);
+        root.style.setProperty('--app-w', `${Math.round(viewport?.width || window.innerWidth)}px`);
+      };
+      root.classList.toggle('is-android', /Android/i.test(navigator.userAgent));
+      setViewport();
+      window.addEventListener('resize', setViewport, { passive: true });
+      window.addEventListener('orientationchange', setViewport, { passive: true });
+      window.visualViewport?.addEventListener('resize', setViewport, { passive: true });
+    })();
+  </script>
+  <style>
+    :root {
+      color-scheme: dark;
+      --app-h: 100vh;
+      --app-w: 100vw;
+      --bg: #050505;
+      --panel: #121214;
+      --panel-soft: #1d1d20;
+      --text: #f5f5f7;
+      --muted: #a1a1a6;
+      --dim: #6e6e73;
+      --line: rgba(255, 255, 255, .12);
+      --red: #ff453a;
+      --yellow: #ffd45a;
+      --green: #32f47e;
+      --blue: #70d7ff;
+      --orange: #ff8a3d;
+      --off: #252528;
+    }
+
+    * {
+      box-sizing: border-box;
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    html,
+    body {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      overflow: hidden;
+      background:
+        radial-gradient(circle at 50% 0%, rgba(112, 215, 255, .10), transparent 32%),
+        linear-gradient(180deg, #080809, #050505 48%, #060606);
+      color: var(--text);
+      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei UI", sans-serif;
+      letter-spacing: 0;
+    }
+
+    body {
+      height: var(--app-h);
+      min-height: var(--app-h);
+      padding:
+        max(12px, env(safe-area-inset-top))
+        max(12px, env(safe-area-inset-right))
+        max(12px, env(safe-area-inset-bottom))
+        max(12px, env(safe-area-inset-left));
+    }
+
+    .screen {
+      width: min(100%, 620px);
+      height: 100%;
+      min-height: 0;
+      margin: 0 auto;
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr);
+      gap: 10px;
+    }
+
+    .topbar {
+      min-height: 44px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .brand {
+      min-width: 0;
+      display: grid;
+      gap: 2px;
+    }
+
+    .brand strong {
+      overflow: hidden;
+      color: var(--text);
+      font-size: clamp(16px, 4.2vw, 20px);
+      font-weight: 820;
+      line-height: 1.1;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .brand span {
+      overflow: hidden;
+      color: var(--muted);
+      font-size: clamp(11px, 3vw, 13px);
+      font-weight: 560;
+      line-height: 1.1;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .chip {
+      height: 34px;
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      flex-shrink: 0;
+      padding: 0 12px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: rgba(255, 255, 255, .055);
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 720;
+    }
+
+    .chip::before {
+      content: "";
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--dim);
+    }
+
+    .chip.online::before {
+      background: var(--green);
+      box-shadow: 0 0 16px rgba(50, 244, 126, .72);
+    }
+
+    .content {
+      min-height: 0;
+      display: grid;
+      grid-template-rows: minmax(250px, 1fr) minmax(150px, .66fr);
+      gap: 10px;
+    }
+
+    .hero {
+      min-height: 0;
+      display: grid;
+      grid-template-rows: minmax(88px, 1fr) auto auto;
+      align-items: center;
+      justify-items: center;
+      gap: clamp(9px, 1.8vh, 14px);
+      padding: clamp(4px, 1.2vh, 10px) 0;
+    }
+
+    .tower {
+      position: relative;
+      width: min(92vw, 470px);
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: clamp(10px, 3vw, 16px);
+      padding: clamp(14px, 3.8vw, 22px);
+      border: 1px solid rgba(255, 255, 255, .16);
+      border-radius: 38px;
+      background:
+        linear-gradient(180deg, rgba(255, 255, 255, .09), rgba(255, 255, 255, .02)),
+        linear-gradient(180deg, #1b1b1f, #09090a);
+      box-shadow:
+        inset 0 1px 0 rgba(255, 255, 255, .18),
+        inset 0 -22px 44px rgba(0, 0, 0, .58),
+        0 26px 68px rgba(0, 0, 0, .48);
+    }
+
+    .tower::after {
+      content: "";
+      position: absolute;
+      inset: 9px;
+      border: 1px solid rgba(255, 255, 255, .055);
+      border-radius: 29px;
+      pointer-events: none;
+    }
+
+    .light {
+      position: relative;
+      width: 100%;
+      aspect-ratio: 1;
+      border-radius: 50%;
+      background:
+        radial-gradient(circle at 35% 26%, rgba(255, 255, 255, .10), transparent 19%),
+        var(--off);
+      box-shadow:
+        inset 0 12px 24px rgba(255, 255, 255, .07),
+        inset 0 -18px 34px rgba(0, 0, 0, .72),
+        0 1px 0 rgba(255, 255, 255, .04);
+      transform: scale(.94);
+      transition: transform .18s ease, filter .18s ease, background .18s ease, box-shadow .18s ease;
+    }
+
+    .light::before {
+      content: "";
+      position: absolute;
+      inset: 13%;
+      border: 1px solid rgba(255, 255, 255, .08);
+      border-radius: 50%;
+    }
+
+    .light.active {
+      transform: scale(1);
+      filter: saturate(1.14);
+    }
+
+    .red.active {
+      background: radial-gradient(circle at 34% 25%, #fff3f0 0 6%, #ffaaa3 13%, var(--red) 46%, #810a07 100%);
+      box-shadow: 0 0 34px rgba(255, 69, 58, .44), 0 0 92px rgba(255, 69, 58, .32), inset 0 -20px 38px rgba(0, 0, 0, .34);
+    }
+
+    .yellow.active {
+      background: radial-gradient(circle at 34% 25%, #fffce5 0 6%, #fff0a3 13%, var(--yellow) 45%, #8a6400 100%);
+      box-shadow: 0 0 34px rgba(255, 212, 90, .40), 0 0 88px rgba(255, 212, 90, .28), inset 0 -20px 38px rgba(0, 0, 0, .32);
+    }
+
+    .green.active {
+      background: radial-gradient(circle at 34% 25%, #effff4 0 6%, #9dffba 13%, var(--green) 45%, #0a6a29 100%);
+      box-shadow: 0 0 34px rgba(50, 244, 126, .38), 0 0 92px rgba(50, 244, 126, .28), inset 0 -20px 38px rgba(0, 0, 0, .32);
+    }
+
+    body[data-state="working"] .tower {
+      animation: workingGlow 3.2s ease-in-out infinite alternate;
+    }
+
+    body[data-state="error"] .red.active,
+    body[data-state="interrupted"] .red.active {
+      animation: redPulse 1.05s ease-in-out infinite alternate;
+    }
+
+    body[data-state="permission"] .yellow.active,
+    body[data-state="attention"] .yellow.active {
+      animation: yellowPulse 1.35s ease-in-out infinite alternate;
+    }
+
+    .readout {
+      width: 100%;
+      min-width: 0;
+      display: grid;
+      gap: 3px;
+      text-align: center;
+    }
+
+    .status {
+      color: var(--text);
+      font-size: clamp(38px, 13vw, 68px);
+      font-weight: 860;
+      line-height: 1.02;
+    }
+
+    .detail {
+      min-height: 19px;
+      color: var(--muted);
+      font-size: clamp(14px, 4vw, 18px);
+      font-weight: 650;
+      line-height: 1.1;
+    }
+
+    .summary-grid {
+      width: min(100%, 430px);
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+    }
+
+    .metric,
+    .session-row {
+      min-width: 0;
+      border: 1px solid rgba(255, 255, 255, .105);
+      border-radius: 8px;
+      background:
+        linear-gradient(180deg, rgba(255, 255, 255, .070), rgba(255, 255, 255, .025)),
+        rgba(255, 255, 255, .034);
+    }
+
+    .metric span {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 680;
+      line-height: 1.1;
+    }
+
+    .actions {
+      width: min(100%, 430px);
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+    }
+
+    button {
+      height: 38px;
+      min-width: 0;
+      padding: 0 14px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: rgba(255, 255, 255, .055);
+      color: var(--text);
+      cursor: pointer;
+      font: inherit;
+      font-size: 14px;
+      font-weight: 760;
+    }
+
+    button.on {
+      border-color: rgba(50, 244, 126, .44);
+      background: rgba(50, 244, 126, .13);
+    }
+
+    button.warn {
+      border-color: rgba(255, 212, 90, .46);
+      background: rgba(255, 212, 90, .12);
+    }
+
+    .session-panel {
+      min-height: 0;
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr);
+      gap: 8px;
+    }
+
+    .summary-grid {
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+    }
+
+    .metric {
+      min-height: 54px;
+      display: grid;
+      align-content: center;
+      gap: 2px;
+      padding: 8px 9px;
+    }
+
+    .metric strong {
+      color: var(--text);
+      font-size: clamp(19px, 5.2vw, 26px);
+      font-weight: 840;
+      line-height: 1;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .session-list {
+      min-height: 0;
+      display: grid;
+      align-content: start;
+      gap: 7px;
+      overflow-y: auto;
+      padding-bottom: 2px;
+      scrollbar-width: none;
+    }
+
+    .session-list::-webkit-scrollbar {
+      display: none;
+    }
+
+    .session-row {
+      min-height: 56px;
+      display: grid;
+      grid-template-columns: 14px minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 10px;
+      padding: 9px 11px;
+    }
+
+    .session-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: var(--dim);
+    }
+
+    .session-row[data-state="working"] .session-dot {
+      background: var(--green);
+      box-shadow: 0 0 14px rgba(50, 244, 126, .60);
+    }
+
+    .session-row[data-state="permission"] .session-dot,
+    .session-row[data-state="attention"] .session-dot {
+      background: var(--yellow);
+      box-shadow: 0 0 14px rgba(255, 212, 90, .52);
+    }
+
+    .session-row[data-state="error"] .session-dot,
+    .session-row[data-state="interrupted"] .session-dot {
+      background: var(--red);
+      box-shadow: 0 0 14px rgba(255, 69, 58, .56);
+    }
+
+    .session-main {
+      min-width: 0;
+      display: grid;
+      gap: 2px;
+    }
+
+    .session-main strong,
+    .session-main span {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .session-main strong {
+      color: var(--text);
+      font-size: 14px;
+      font-weight: 760;
+      line-height: 1.12;
+    }
+
+    .session-main span {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 560;
+      line-height: 1.1;
+    }
+
+    .session-badge {
+      max-width: 74px;
+      overflow: hidden;
+      padding: 4px 8px;
+      border: 1px solid rgba(255, 255, 255, .10);
+      border-radius: 999px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 720;
+      line-height: 1;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    @keyframes workingGlow {
+      from { box-shadow: inset 0 1px 0 rgba(255, 255, 255, .18), inset 0 -22px 44px rgba(0, 0, 0, .58), 0 26px 68px rgba(0, 0, 0, .48); }
+      to { box-shadow: inset 0 1px 0 rgba(255, 255, 255, .22), inset 0 -22px 44px rgba(0, 0, 0, .56), 0 26px 82px rgba(112, 215, 255, .18); }
+    }
+
+    @keyframes redPulse {
+      from { filter: brightness(.90) saturate(1.05); }
+      to { filter: brightness(1.26) saturate(1.25); }
+    }
+
+    @keyframes yellowPulse {
+      from { filter: brightness(.94) saturate(1.05); }
+      to { filter: brightness(1.18) saturate(1.16); }
+    }
+
+    @media (max-height: 720px) and (orientation: portrait) {
+      .content {
+        grid-template-rows: minmax(218px, 1fr) minmax(136px, .72fr);
+      }
+
+      .hero {
+        gap: 7px;
+      }
+
+      .tower {
+        width: min(86vw, 360px);
+        padding: 12px;
+        border-radius: 30px;
+      }
+
+      .status {
+        font-size: clamp(34px, 11vw, 54px);
+      }
+
+    }
+
+    @media (orientation: landscape) {
+      body {
+        padding:
+          max(9px, env(safe-area-inset-top))
+          max(14px, env(safe-area-inset-right))
+          max(9px, env(safe-area-inset-bottom))
+          max(14px, env(safe-area-inset-left));
+      }
+
+      .screen {
+        width: min(100%, 1040px);
+        gap: 8px;
+      }
+
+      .topbar {
+        min-height: 34px;
+      }
+
+      .brand {
+        display: flex;
+        align-items: baseline;
+        gap: 10px;
+      }
+
+      .content {
+        grid-template-columns: minmax(330px, 1fr) minmax(290px, .82fr);
+        grid-template-rows: minmax(0, 1fr);
+        gap: 14px;
+      }
+
+      .hero {
+        grid-template-rows: minmax(104px, 1fr) auto auto;
+        align-content: center;
+        justify-items: end;
+      }
+
+      .tower,
+      .actions {
+        width: min(100%, 470px);
+      }
+
+      .tower {
+        padding: clamp(12px, 2.8vh, 18px);
+        gap: clamp(9px, 2.4vh, 14px);
+        border-radius: 34px;
+      }
+
+      .readout {
+        text-align: right;
+      }
+
+      .status {
+        font-size: clamp(34px, 9vh, 62px);
+      }
+
+      .session-panel {
+        align-self: stretch;
+        padding-top: 2px;
+      }
+    }
+
+    @media (orientation: landscape) and (max-height: 520px) {
+      .content {
+        grid-template-columns: minmax(320px, .9fr) minmax(280px, 1fr);
+      }
+
+      .hero {
+        grid-template-rows: auto auto auto;
+        align-content: start;
+        justify-items: start;
+        gap: 8px;
+        padding: 0;
+      }
+
+      .tower,
+      .actions,
+      .readout {
+        width: min(100%, 340px);
+      }
+
+      .tower {
+        padding: 10px;
+        gap: 8px;
+        border-radius: 28px;
+      }
+
+      .readout {
+        text-align: left;
+      }
+
+      .status {
+        font-size: clamp(30px, 8vh, 44px);
+      }
+
+      .detail {
+        font-size: 14px;
+      }
+
+    }
+  </style>
+</head>
+<body data-state="idle">
+  <main class="screen">
+    <header class="topbar">
+      <div class="brand">
+        <strong>Codex 红绿灯</strong>
+        <span id="host">等待连接</span>
+      </div>
+      <span id="net" class="chip">离线</span>
+    </header>
+
+    <section class="content" aria-label="Codex 多会话状态">
+      <section class="hero">
+        <div class="tower" aria-hidden="true">
+          <div id="red" class="light red"></div>
+          <div id="yellow" class="light yellow"></div>
+          <div id="green" class="light green active"></div>
+        </div>
+
+        <div class="readout">
+          <div id="statusText" class="status">空闲</div>
+          <div id="detailText" class="detail">绿灯常亮</div>
+        </div>
+
+        <div class="actions">
+          <button id="realtimeBtn" class="on" type="button">实时 开</button>
+          <button id="wakeBtn" type="button">常亮</button>
+        </div>
+      </section>
+
+      <section class="session-panel" aria-label="会话状态">
+        <div class="summary-grid">
+          <div class="metric"><span>工作</span><strong id="countWorking">0</strong></div>
+          <div class="metric"><span>确认</span><strong id="countPermission">0</strong></div>
+          <div class="metric"><span>异常</span><strong id="countError">0</strong></div>
+          <div class="metric"><span>空闲</span><strong id="countIdle">0</strong></div>
+        </div>
+        <div id="sessionList" class="session-list"></div>
+      </section>
+    </section>
+  </main>
+
+  <script>
+    const lights = {
+      red: document.getElementById('red'),
+      yellow: document.getElementById('yellow'),
+      green: document.getElementById('green'),
+    };
+    const netEl = document.getElementById('net');
+    const hostEl = document.getElementById('host');
+    const statusText = document.getElementById('statusText');
+    const detailText = document.getElementById('detailText');
+    const realtimeBtn = document.getElementById('realtimeBtn');
+    const wakeBtn = document.getElementById('wakeBtn');
+    const sessionList = document.getElementById('sessionList');
+    const countWorking = document.getElementById('countWorking');
+    const countPermission = document.getElementById('countPermission');
+    const countError = document.getElementById('countError');
+    const countIdle = document.getElementById('countIdle');
+
+    const errorSignals = new Set(['error', 'failed', 'failure']);
+    const permissionSignals = new Set(['permission']);
+    const interruptSignals = new Set(['blocked', 'interrupted', 'interrupt']);
+    const attentionSignals = new Set(['attention', 'done']);
+    const workingSignals = new Set(['working', 'thinking', 'tool_done']);
+    const cycleOrder = ['red', 'yellow', 'green'];
+
+    let ws = null;
+    let realtime = true;
+    let reconnectTimer = null;
+    let pingTimer = null;
+    let cycleTimer = null;
+    let cycleIndex = 0;
+    let wakeLock = null;
+    let holdGreen = false;
+    let lastSummaries = [];
+
+    hostEl.textContent = location.host || '本机服务';
+
+    function apiBase() {
+      if (location.port === '3000') return `${location.protocol}//${location.hostname}:3001`;
+      return '';
+    }
+
+    function wsUrl() {
+      const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const host = location.port === '3000' ? `${location.hostname}:3001` : location.host;
+      return `${proto}//${host}/api/ws`;
+    }
+
+    function setOnline(online) {
+      netEl.classList.toggle('online', online);
+      netEl.textContent = online ? '实时' : '离线';
+    }
+
+    function stateFromSignal(signal, aggregate) {
+      const sig = signal || aggregate || 'idle';
+      if (permissionSignals.has(sig)) return 'permission';
+      if (errorSignals.has(sig)) return 'error';
+      if (interruptSignals.has(sig) || aggregate === 'blocked') return 'interrupted';
+      if (workingSignals.has(sig) || aggregate === 'working') return 'working';
+      if (attentionSignals.has(sig) || aggregate === 'attention') return 'attention';
+      return 'idle';
+    }
+
+    function priorityFor(state) {
+      if (state === 'error' || state === 'interrupted') return 50;
+      if (state === 'permission') return 40;
+      if (state === 'attention') return 30;
+      if (state === 'working') return 20;
+      return 0;
+    }
+
+    function shortSessionId(sessionId) {
+      const clean = String(sessionId || '').replace(/^codex[:_-]?/i, '').replace(/[^a-zA-Z0-9]/g, '');
+      if (!clean) return 'main';
+      return clean.length <= 6 ? clean : clean.slice(-6);
+    }
+
+    function normalizeSummaries(data) {
+      const now = Date.now();
+      if (Array.isArray(data?.session_summaries)) {
+        return data.session_summaries
+          .filter(item => item && typeof item === 'object')
+          .map(item => {
+            const signal = String(item.signal || 'idle');
+            const state = item.state || stateFromSignal(signal, data.aggregate);
+            const updated = Number(item.updated_at || now);
+            return {
+              session_id: String(item.session_id || item.id || 'global'),
+              label: String(item.label || `会话 ${shortSessionId(item.session_id || item.id || 'global')}`),
+              signal,
+              state,
+              updated_at: updated,
+              priority: Number(item.priority ?? priorityFor(state)),
+            };
+          })
+          .sort(sortSessions);
+      }
+
+      return Object.entries(data?.sessions || {})
+        .filter(([, entry]) => entry && typeof entry === 'object')
+        .map(([sessionId, entry]) => {
+          const signal = String(entry.signal || 'idle');
+          const state = stateFromSignal(signal, data?.aggregate);
+          return {
+            session_id: sessionId,
+            label: String(entry.label || `会话 ${shortSessionId(sessionId)}`),
+            signal,
+            state,
+            updated_at: Number(entry.updated_at || now),
+            priority: priorityFor(state),
+          };
+        })
+        .sort(sortSessions);
+    }
+
+    function sortSessions(a, b) {
+      return b.priority - a.priority || b.updated_at - a.updated_at || a.session_id.localeCompare(b.session_id);
+    }
+
+    function bestSignalFromSummaries(summaries, aggregate, fallbackSignal) {
+      const best = summaries.slice().sort(sortSessions)[0];
+      return best?.signal || fallbackSignal || aggregate || 'idle';
+    }
+
+    function sessionCounts(summaries, incoming) {
+      const counts = {
+        working: 0,
+        permission: 0,
+        error: 0,
+        idle: 0,
+      };
+      if (incoming && typeof incoming === 'object') {
+        counts.working = Number(incoming.working || 0);
+        counts.permission = Number(incoming.permission || 0);
+        counts.error = Number(incoming.error || 0);
+        counts.idle = Number(incoming.idle || 0);
+        return counts;
+      }
+      for (const session of summaries) {
+        if (session.state === 'working') counts.working += 1;
+        else if (session.state === 'permission') counts.permission += 1;
+        else if (session.state === 'error' || session.state === 'interrupted') counts.error += 1;
+        else if (session.state === 'idle') counts.idle += 1;
+      }
+      return counts;
+    }
+
+    function timeAgo(updatedAt) {
+      const delta = Math.max(0, Date.now() - Number(updatedAt || 0));
+      if (delta < 1500) return '刚刚';
+      if (delta < 60000) return `${Math.round(delta / 1000)}秒前`;
+      if (delta < 3600000) return `${Math.round(delta / 60000)}分钟前`;
+      return `${Math.round(delta / 3600000)}小时前`;
+    }
+
+    function stateCopy(state) {
+      if (state === 'working') return ['正在工作', '循环亮起', '工作'];
+      if (state === 'permission') return ['等待确认', '黄灯提醒', '确认'];
+      if (state === 'error') return ['运行出错', '红灯提醒', '错误'];
+      if (state === 'interrupted') return ['任务中断', '红灯提醒', '中断'];
+      if (state === 'attention') return ['需要关注', '黄灯提醒', '关注'];
+      return ['空闲', '绿灯常亮', '空闲'];
+    }
+
+    function copyForDashboard(state, summaries) {
+      const active = summaries.length;
+      const prefix = active > 1 ? `${active}个会话 · ` : '';
+      const [title, detail] = stateCopy(state);
+      if (state === 'idle') return [title, active ? `${prefix}绿灯常亮` : '绿灯常亮'];
+      return [title, `${prefix}${detail}`];
+    }
+
+    function activate(name) {
+      Object.entries(lights).forEach(([key, el]) => {
+        el.classList.toggle('active', key === name);
+      });
+    }
+
+    function stopCycle() {
+      if (cycleTimer) clearInterval(cycleTimer);
+      cycleTimer = null;
+    }
+
+    function startCycle() {
+      if (cycleTimer) return;
+      cycleIndex = 0;
+      activate(cycleOrder[cycleIndex]);
+      cycleTimer = setInterval(() => {
+        cycleIndex = (cycleIndex + 1) % cycleOrder.length;
+        activate(cycleOrder[cycleIndex]);
+      }, 1200);
+    }
+
+    function applyState(aggregate, signal, summaries) {
+      const state = stateFromSignal(signal, aggregate);
+      document.body.dataset.state = state;
+      const [title, detail] = copyForDashboard(state, summaries);
+      statusText.textContent = title;
+      detailText.textContent = detail;
+
+      if (state === 'working') {
+        startCycle();
+      } else {
+        stopCycle();
+        if (state === 'permission' || state === 'attention') activate('yellow');
+        else if (state === 'error' || state === 'interrupted') activate('red');
+        else activate('green');
+      }
+    }
+
+    function applyHoldGreen(summaries) {
+      document.body.dataset.state = 'idle';
+      statusText.textContent = '常亮';
+      detailText.textContent = summaries.length > 1 ? `${summaries.length}个会话 · 手动绿灯` : '手动绿灯';
+      stopCycle();
+      activate('green');
+    }
+
+    function renderSessions(summaries, incomingCounts) {
+      lastSummaries = summaries;
+      const counts = sessionCounts(summaries, incomingCounts);
+      countWorking.textContent = counts.working;
+      countPermission.textContent = counts.permission;
+      countError.textContent = counts.error;
+      countIdle.textContent = counts.idle;
+
+      if (!summaries.length) {
+        sessionList.innerHTML = '<div class="session-row" data-state="idle"><span class="session-dot"></span><div class="session-main"><strong>没有活跃会话</strong><span>绿灯常亮</span></div><span class="session-badge">空闲</span></div>';
+        return;
+      }
+
+      sessionList.innerHTML = summaries.slice(0, 12).map(session => {
+        const [title, detail, badge] = stateCopy(session.state);
+        return `
+          <div class="session-row" data-state="${escapeAttr(session.state)}">
+            <span class="session-dot"></span>
+            <div class="session-main">
+              <strong>${escapeHtml(session.label)}</strong>
+              <span>${escapeHtml(title)} · ${escapeHtml(timeAgo(session.updated_at))}</span>
+            </div>
+            <span class="session-badge">${escapeHtml(badge || detail)}</span>
+          </div>
+        `;
+      }).join('');
+    }
+
+    function applyDashboard(data) {
+      const summaries = normalizeSummaries(data);
+      const signal = bestSignalFromSummaries(summaries, data?.aggregate, data?.signal);
+      renderSessions(summaries, data?.session_counts);
+      if (holdGreen) {
+        applyHoldGreen(summaries);
+        return;
+      }
+      applyState(data?.aggregate || 'idle', signal, summaries);
+    }
+
+    async function loadState() {
+      try {
+        const res = await fetch(`${apiBase()}/api/signal-light/state`, { cache: 'no-store' });
+        const data = await res.json();
+        applyDashboard(data);
+        setOnline(Boolean(ws && ws.readyState === WebSocket.OPEN));
+      } catch {
+        setOnline(false);
+      }
+    }
+
+    function connect() {
+      if (!realtime || ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
+      clearTimeout(reconnectTimer);
+      clearInterval(pingTimer);
+
+      ws = new WebSocket(wsUrl());
+      ws.addEventListener('open', () => {
+        setOnline(true);
+        ws.send(JSON.stringify({
+          type: 'page_change',
+          page: { id: 'phone_traffic_light', name: 'Phone Traffic Light' },
+          ts: Date.now(),
+        }));
+        pingTimer = setInterval(() => {
+          if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: 'ping', ts: Date.now() }));
+          }
+        }, 20000);
+        loadState();
+      });
+
+      ws.addEventListener('message', event => {
+        try {
+          const msg = JSON.parse(event.data);
+          if (msg.type === 'signal_light') applyDashboard(msg);
+        } catch {}
+      });
+
+      ws.addEventListener('close', () => {
+        clearInterval(pingTimer);
+        pingTimer = null;
+        setOnline(false);
+        if (realtime) reconnectTimer = setTimeout(connect, 700);
+      });
+
+      ws.addEventListener('error', () => {
+        setOnline(false);
+      });
+    }
+
+    function escapeHtml(value) {
+      return String(value).replace(/[&<>"']/g, char => ({
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        '"': '&quot;',
+        "'": '&#39;',
+      }[char]));
+    }
+
+    function escapeAttr(value) {
+      return escapeHtml(value).replace(/`/g, '&#96;');
+    }
+
+    realtimeBtn.addEventListener('click', () => {
+      realtime = !realtime;
+      realtimeBtn.textContent = realtime ? '实时 开' : '实时 关';
+      realtimeBtn.classList.toggle('on', realtime);
+      if (realtime) {
+        connect();
+        loadState();
+      } else if (ws) {
+        ws.close();
+      }
+    });
+
+    async function requestScreenWake() {
+      if (!('wakeLock' in navigator) || wakeLock) return;
+      try {
+        wakeLock = await navigator.wakeLock.request('screen');
+        wakeLock.addEventListener('release', () => {
+          wakeLock = null;
+        });
+      } catch {}
+    }
+
+    async function releaseScreenWake() {
+      if (!wakeLock) return;
+      const lock = wakeLock;
+      wakeLock = null;
+      try {
+        await lock.release();
+      } catch {}
+    }
+
+    function setHoldGreen(enabled) {
+      holdGreen = enabled;
+      wakeBtn.textContent = enabled ? '常亮中' : '常亮';
+      wakeBtn.classList.toggle('warn', enabled);
+      if (enabled) {
+        applyHoldGreen(lastSummaries);
+        requestScreenWake();
+      } else {
+        releaseScreenWake();
+        loadState();
+      }
+    }
+
+    wakeBtn.addEventListener('click', event => {
+      event.stopImmediatePropagation();
+      setHoldGreen(!holdGreen);
+    }, true);
+
+    wakeBtn.addEventListener('click', async () => {
+      try {
+        if (wakeLock) {
+          await wakeLock.release();
+          wakeLock = null;
+          wakeBtn.textContent = '常亮';
+          wakeBtn.classList.remove('warn');
+          return;
+        }
+        if ('wakeLock' in navigator) {
+          wakeLock = await navigator.wakeLock.request('screen');
+          wakeBtn.textContent = '常亮中';
+          wakeBtn.classList.add('warn');
+          wakeLock.addEventListener('release', () => {
+            wakeLock = null;
+            wakeBtn.textContent = '常亮';
+            wakeBtn.classList.remove('warn');
+          });
+        }
+      } catch {}
+    });
+
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') {
+        loadState();
+        if (realtime) connect();
+        if (holdGreen) requestScreenWake();
+      }
+    });
+
+    applyDashboard({ aggregate: 'idle', sessions: {} });
+    loadState();
+    connect();
+    setInterval(() => {
+      if (!document.hidden) {
+        renderSessions(lastSummaries, null);
+        loadState();
+      }
+    }, 1400);
+  </script>
+</body>
+</html>
