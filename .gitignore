@@ -1,0 +1,9 @@
+node_modules/
+cloudflared.exe
+cloudflared2.exe
+.env
+desktop/__pycache__/
+*.pyc
+.venv/
+dist/
+build/

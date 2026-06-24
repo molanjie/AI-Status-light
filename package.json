@@ -1,0 +1,16 @@
+{
+  "name": "codex-traffic-light",
+  "version": "1.0.0",
+  "description": "Codex 本地会话与运行状态灯",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "express": "^4.21.0",
+    "node-fetch": "^3.3.2",
+    "playwright": "^1.60.0"
+  }
+}
