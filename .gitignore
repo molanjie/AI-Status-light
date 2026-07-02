@@ -1,6 +1,7 @@
 node_modules/
 cloudflared.exe
 cloudflared2.exe
+cloudflared-*.log
 .env
 desktop/__pycache__/
 *.pyc

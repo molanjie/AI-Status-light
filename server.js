@@ -11,6 +11,14 @@ const PUBLIC_URL = process.env.PUBLIC_URL || "";
 
 app.use(express.static(path.join(__dirname, "public")));
 
+app.use((req, res, next) => {
+  res.set("Access-Control-Allow-Origin", "*");
+  res.set("Access-Control-Allow-Methods", "GET, OPTIONS");
+  res.set("Access-Control-Allow-Headers", "Content-Type");
+  if (req.method === "OPTIONS") return res.sendStatus(204);
+  next();
+});
+
 app.get("/api/status", (req, res) => {
   res.set("Cache-Control", "no-store");
   res.json(readCodexStatus());

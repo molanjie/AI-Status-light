@@ -1027,9 +1027,37 @@ function renderStatus(data) {
   if (typeof renderUsage === "function") renderUsage(data);
 }
 
+var DEFAULT_STATUS_API_BASE = "";
+var STATUS_API_STORAGE_KEY = "codex_status_api_base";
+
+function normalizeApiBase(value) {
+  return (value || "").replace(/\/+$/, "");
+}
+
+function getStatusApiBase() {
+  var params = new URLSearchParams(window.location.search);
+  var apiParam = normalizeApiBase(params.get("api"));
+  if (apiParam) {
+    try { localStorage.setItem(STATUS_API_STORAGE_KEY, apiParam); } catch (err) {}
+    return apiParam;
+  }
+  if (window.CODEX_STATUS_API_BASE) return normalizeApiBase(window.CODEX_STATUS_API_BASE);
+  if (DEFAULT_STATUS_API_BASE) return normalizeApiBase(DEFAULT_STATUS_API_BASE);
+  try {
+    var stored = normalizeApiBase(localStorage.getItem(STATUS_API_STORAGE_KEY));
+    if (stored) return stored;
+  } catch (err) {}
+  if (window.location.protocol === "file:") return "http://127.0.0.1:3456";
+  return "";
+}
+
+function getStatusApiUrl() {
+  return getStatusApiBase() + "/api/status";
+}
+
 async function fetchStatus() {
   try {
-    var response = await fetch("/api/status", { cache: "no-store" });
+    var response = await fetch(getStatusApiUrl(), { cache: "no-store" });
     if (!response.ok) throw new Error("HTTP " + response.status);
     var data = await response.json();
     lastGoodStatus = data;
