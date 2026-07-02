@@ -1,0 +1,1560 @@
+<!DOCTYPE html>
+<!-- encoding: utf-8 -->
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>Codex 状态灯</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    min-height: 100vh;
+    padding: 24px 14px 32px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #f4f7f8;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    background:
+      radial-gradient(circle at 18% 10%, rgba(48, 209, 88, 0.08), transparent 30%),
+      radial-gradient(circle at 82% 90%, rgba(64, 156, 255, 0.07), transparent 34%),
+      #090b0d;
+  }
+  /* Floating ambient orbs */
+  .orb {
+    position: fixed;
+    border-radius: 50%;
+    filter: blur(80px);
+    opacity: 0.35;
+    pointer-events: none;
+    transition: background 1.2s ease, opacity 1.2s ease;
+    z-index: 0;
+  }
+  .orb-1 {
+    width: 420px; height: 420px;
+    top: -80px; left: -100px;
+    background: radial-gradient(circle, rgba(48,209,88,0.5), transparent 70%);
+    animation: drift1 18s ease-in-out infinite alternate;
+  }
+  .orb-2 {
+    width: 350px; height: 350px;
+    bottom: -60px; right: -80px;
+    background: radial-gradient(circle, rgba(64,156,255,0.4), transparent 70%);
+    animation: drift2 22s ease-in-out infinite alternate;
+  }
+  .orb-3 {
+    width: 280px; height: 280px;
+    top: 50%; left: 60%;
+    background: radial-gradient(circle, rgba(191,90,242,0.3), transparent 70%);
+    animation: drift3 15s ease-in-out infinite alternate;
+  }
+  .orb-4 {
+    width: 200px; height: 200px;
+    top: 30%; left: 15%;
+    background: radial-gradient(circle, rgba(255,159,10,0.25), transparent 70%);
+    animation: drift4 20s ease-in-out infinite alternate;
+  }
+  @keyframes drift1 {
+    0% { transform: translate(0, 0) scale(1); }
+    50% { transform: translate(60px, 40px) scale(1.1); }
+    100% { transform: translate(20px, 80px) scale(0.95); }
+  }
+  @keyframes drift2 {
+    0% { transform: translate(0, 0) scale(1); }
+    50% { transform: translate(-50px, -30px) scale(1.08); }
+    100% { transform: translate(-20px, -60px) scale(0.92); }
+  }
+  @keyframes drift3 {
+    0% { transform: translate(0, 0) scale(1); }
+    50% { transform: translate(-40px, 50px) scale(1.15); }
+    100% { transform: translate(30px, -40px) scale(0.9); }
+  }
+  @keyframes drift4 {
+    0% { transform: translate(0, 0) scale(1); }
+    50% { transform: translate(50px, -30px) scale(1.1); }
+    100% { transform: translate(-30px, 50px) scale(0.95); }
+  }
+  /* Particle canvas */
+  #particles {
+    position: fixed;
+    inset: 0;
+    z-index: 0;
+    pointer-events: none;
+  }
+  /* Status-reactive orb colors */
+  body.state-processing .orb-1 { background: radial-gradient(circle, rgba(255,69,58,0.55), transparent 70%); }
+  body.state-processing .orb-2 { background: radial-gradient(circle, rgba(255,100,80,0.35), transparent 70%); }
+  body.state-processing .orb-3 { background: radial-gradient(circle, rgba(255,69,58,0.25), transparent 70%); }
+  body.state-processing .orb-4 { background: radial-gradient(circle, rgba(255,140,60,0.3), transparent 70%); }
+  body.state-waiting .orb-1 { background: radial-gradient(circle, rgba(255,214,10,0.45), transparent 70%); }
+  body.state-waiting .orb-2 { background: radial-gradient(circle, rgba(255,200,50,0.3), transparent 70%); }
+  body.state-waiting .orb-3 { background: radial-gradient(circle, rgba(255,180,0,0.25), transparent 70%); }
+  body.state-waiting .orb-4 { background: radial-gradient(circle, rgba(255,214,10,0.2), transparent 70%); }
+  body.state-idle .orb-1 { background: radial-gradient(circle, rgba(48,209,88,0.5), transparent 70%); }
+  body.state-idle .orb-2 { background: radial-gradient(circle, rgba(64,156,255,0.4), transparent 70%); }
+  body.state-idle .orb-3 { background: radial-gradient(circle, rgba(48,209,88,0.3), transparent 70%); }
+  body.state-idle .orb-4 { background: radial-gradient(circle, rgba(100,210,130,0.25), transparent 70%); }
+  body.state-offline .orb-1, body.state-error .orb-1 { background: radial-gradient(circle, rgba(255,69,58,0.4), transparent 70%); opacity: 0.2; }
+  body.state-offline .orb-2, body.state-error .orb-2 { background: radial-gradient(circle, rgba(120,120,120,0.2), transparent 70%); opacity: 0.15; }
+  body.state-offline .orb-3, body.state-error .orb-3 { background: radial-gradient(circle, rgba(80,80,80,0.15), transparent 70%); opacity: 0.15; }
+  body.state-offline .orb-4, body.state-error .orb-4 { background: radial-gradient(circle, rgba(60,60,60,0.1), transparent 70%); opacity: 0.1; }
+  .island {
+    position: relative;
+    z-index: 1;
+    width: min(520px, 100%);
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 22px;
+    overflow: hidden;
+    padding: 18px 20px 16px 24px;
+    border: 1px solid rgba(255, 255, 255, 0.11);
+    border-radius: 30px;
+    background: linear-gradient(145deg, rgba(27, 32, 35, 0.94), rgba(10, 13, 15, 0.94));
+    box-shadow: 0 22px 64px rgba(0, 0, 0, 0.42), inset 0 1px rgba(255, 255, 255, 0.04);
+    backdrop-filter: blur(18px);
+  }
+  .island::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background: linear-gradient(120deg, rgba(255, 255, 255, 0.055), transparent 34%);
+  }
+  .content { min-width: 0; }
+  .eyebrow {
+    display: flex;
+    align-items: center;
+    gap: 18px;
+    margin-bottom: 4px;
+    color: #8b949b;
+    font-size: 14px;
+    font-weight: 650;
+  }
+  .session-count { color: #737c82; font-weight: 550; }
+  .status-label {
+    overflow: hidden;
+    color: #f7f9fa;
+    font-size: 26px;
+    font-weight: 750;
+    letter-spacing: -0.5px;
+    line-height: 1.2;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .thread-title {
+    margin-top: 4px;
+    overflow: hidden;
+    color: #929ba1;
+    font-size: 12px;
+    line-height: 1.35;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .activity-track {
+    height: 6px;
+    margin-top: 11px;
+    overflow: hidden;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.08);
+  }
+  .activity-bar {
+    width: 100%;
+    height: 100%;
+    border-radius: inherit;
+    transform-origin: left;
+    transition: background 0.3s ease, opacity 0.3s ease;
+  }
+  .island.processing .activity-bar {
+    background: linear-gradient(90deg, transparent, #ff625a, transparent);
+    animation: scan 1.5s ease-in-out infinite;
+  }
+  .island.waiting .activity-bar { background: #ffd60a; opacity: 0.75; }
+  .island.idle .activity-bar { background: #30d158; opacity: 0.72; }
+  .island.offline .activity-bar,
+  .island.error .activity-bar { background: #ff453a; opacity: 0.72; }
+  .lights {
+    width: 78px;
+    height: 78px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 50%;
+    background: rgba(0, 0, 0, 0.28);
+    box-shadow: inset 0 0 18px rgba(0, 0, 0, 0.35);
+  }
+  .light {
+    width: 14px;
+    height: 14px;
+    border: 1px solid rgba(255, 255, 255, 0.07);
+    border-radius: 50%;
+    background: #24292c;
+    box-shadow: inset 0 -3px 5px rgba(0, 0, 0, 0.35);
+    transition: background 0.25s, box-shadow 0.25s, transform 0.25s;
+  }
+  .light.active-red { background: #ff453a; box-shadow: 0 0 16px #ff453aaa; }
+  .light.active-yellow { background: #ffd60a; box-shadow: 0 0 16px #ffd60aaa; }
+  .light.active-green { background: #30d158; box-shadow: 0 0 16px #30d158aa; }
+  .light.active-red, .light.active-yellow, .light.active-green { transform: scale(1.12); }
+  .error {
+    display: none;
+    margin-top: 7px;
+    color: #d8aa45;
+    font-size: 11px;
+    line-height: 1.35;
+  }
+  .error.visible { display: block; }
+  .status-time {
+    margin-top: 7px;
+    color: #555f65;
+    font-size: 10px;
+    line-height: 1;
+  }
+  .island.disconnected { border-color: rgba(255, 214, 10, 0.3); }
+  @keyframes scan {
+    0% { transform: translateX(-100%); }
+    100% { transform: translateX(100%); }
+  }
+  /* Stats card */
+  .stats-row {
+    width: 100%;
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 10px;
+  }
+  .stat-card {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 2px;
+    padding: 12px 8px;
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    border-radius: 16px;
+    background: linear-gradient(145deg, rgba(27, 32, 35, 0.82), rgba(10, 13, 15, 0.82));
+    backdrop-filter: blur(10px);
+  }
+  .stat-value {
+    color: #e0e5e8;
+    font-size: 20px;
+    font-weight: 750;
+    font-variant-numeric: tabular-nums;
+    line-height: 1.1;
+  }
+  .stat-label {
+    color: #5a6468;
+    font-size: 10px;
+    font-weight: 550;
+    letter-spacing: 0.3px;
+  }
+  /* Task duration timer */
+  .task-timer {
+    display: none;
+    align-items: center;
+    gap: 8px;
+    margin-top: 8px;
+    color: #8b949b;
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+  }
+  .task-timer.visible { display: flex; }
+  .timer-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: #ff453a;
+    animation: pulse 1.5s ease-in-out infinite;
+  }
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.3; }
+  }
+  /* Activity timeline */
+  .timeline {
+    width: 100%;
+    display: none;
+    flex-direction: column;
+    gap: 0;
+    overflow: hidden;
+    padding: 14px 18px;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 20px;
+    background: linear-gradient(145deg, rgba(27, 32, 35, 0.88), rgba(10, 13, 15, 0.88));
+    backdrop-filter: blur(14px);
+  }
+  .timeline.visible { display: flex; }
+  .timeline-header {
+    color: #6b7479;
+    font-size: 11px;
+    font-weight: 650;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    margin-bottom: 8px;
+  }
+  .timeline-bar {
+    display: flex;
+    gap: 2px;
+    height: 28px;
+    align-items: flex-end;
+  }
+  .timeline-segment {
+    flex: 1;
+    min-width: 3px;
+    border-radius: 2px;
+    transition: background 0.3s;
+  }
+  .timeline-segment.s-idle { background: #30d158; }
+  .timeline-segment.s-processing { background: #ff453a; }
+  .timeline-segment.s-waiting { background: #ffd60a; }
+  .timeline-segment.s-offline { background: #3a3f42; }
+  .timeline-legend {
+    display: flex;
+    gap: 14px;
+    margin-top: 8px;
+  }
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    color: #5a6468;
+    font-size: 9px;
+  }
+  .legend-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+  }
+  .legend-dot.l-idle { background: #30d158; }
+  .legend-dot.l-processing { background: #ff453a; }
+  .legend-dot.l-waiting { background: #ffd60a; }
+  .legend-dot.l-offline { background: #3a3f42; }
+  /* Usage & plan card */
+  .usage-card {
+    width: 100%;
+    overflow: hidden;
+    padding: 14px 18px;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 20px;
+    background: linear-gradient(145deg, rgba(27, 32, 35, 0.88), rgba(10, 13, 15, 0.88));
+    backdrop-filter: blur(14px);
+  }
+  .usage-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 10px;
+  }
+  .usage-title {
+    color: #6b7479;
+    font-size: 11px;
+    font-weight: 650;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+  }
+  .plan-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 8px;
+    border-radius: 8px;
+    font-size: 10px;
+    font-weight: 650;
+    letter-spacing: 0.3px;
+    text-transform: uppercase;
+  }
+  .plan-badge.plus { background: rgba(48,209,88,0.15); color: #30d158; }
+  .plan-badge.pro { background: rgba(191,90,242,0.15); color: #bf5af2; }
+  .plan-badge.free { background: rgba(142,142,147,0.15); color: #8e8e93; }
+  .usage-tokens {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    margin-bottom: 4px;
+  }
+  .token-big {
+    color: #f7f9fa;
+    font-size: 22px;
+    font-weight: 750;
+    font-variant-numeric: tabular-nums;
+  }
+  .token-label {
+    color: #6b7479;
+    font-size: 11px;
+  }
+  .usage-sub {
+    color: #4e575c;
+    font-size: 10px;
+    margin-bottom: 10px;
+  }
+  .model-bars {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .model-bar-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .model-bar-name {
+    width: 110px;
+    flex-shrink: 0;
+    overflow: visible;
+    color: #7a8389;
+    font-size: 10px;
+    font-weight: 550;
+    white-space: nowrap;
+  }
+  .model-bar-track {
+    flex: 1;
+    height: 4px;
+    overflow: hidden;
+    border-radius: 2px;
+    background: rgba(255, 255, 255, 0.06);
+  }
+  .model-bar-fill {
+    height: 100%;
+    border-radius: inherit;
+    transition: width 0.6s ease;
+  }
+  .model-bar-fill.c-gpt55 { background: #30d158; }
+  .model-bar-fill.c-dsflash { background: #64d2ff; }
+  .model-bar-fill.c-dspro { background: #5e5ce6; }
+  .model-bar-fill.c-other { background: #636366; }
+  .model-bar-val {
+    width: 55px;
+    flex-shrink: 0;
+    color: #5a6468;
+    font-size: 10px;
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+  }
+  .plan-sub-info {
+    margin-top: 10px;
+    padding-top: 8px;
+    border-top: 1px solid rgba(255,255,255,0.04);
+    color: #4e575c;
+    font-size: 10px;
+    display: flex;
+    justify-content: space-between;
+  }
+  /* Quota windows */
+  .quota-windows {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 1px solid rgba(255,255,255,0.04);
+  }
+  .quota-box {
+    padding: 8px 10px;
+    border-radius: 12px;
+    background: rgba(255,255,255,0.03);
+  }
+  .quota-label {
+    color: #6b7479;
+    font-size: 9px;
+    font-weight: 650;
+    letter-spacing: 0.3px;
+    text-transform: uppercase;
+    margin-bottom: 2px;
+  }
+  .quota-pct {
+    color: #e0e5e8;
+    font-size: 22px;
+    font-weight: 800;
+    font-variant-numeric: tabular-nums;
+    line-height: 1.1;
+  }
+  .quota-pct.low { color: #ff453a; }
+  .quota-pct.mid { color: #ffd60a; }
+  .quota-pct.high { color: #30d158; }
+  .quota-bar-track {
+    height: 4px;
+    margin: 4px 0;
+    overflow: hidden;
+    border-radius: 2px;
+    background: rgba(255,255,255,0.08);
+  }
+  .quota-bar-fill {
+    height: 100%;
+    border-radius: inherit;
+    transition: width 0.6s ease, background 0.3s;
+  }
+  .quota-detail {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 4px;
+    color: #5a6468;
+    font-size: 9px;
+    font-variant-numeric: tabular-nums;
+  }
+  .quota-recover {
+    display: flex;
+    align-items: center;
+    gap: 3px;
+    color: #4e575c;
+    font-size: 9px;
+    font-variant-numeric: tabular-nums;
+  }
+  .quota-recover .recover-icon {
+    width: 8px;
+    height: 8px;
+    border: 1.5px solid #4e575c;
+    border-top-color: transparent;
+    border-radius: 50%;
+    animation: spin 2s linear infinite;
+  }
+  @keyframes spin {
+    to { transform: rotate(360deg); }
+  }
+  @media (max-width: 420px) {
+    .island { gap: 14px; padding: 15px 16px 14px 18px; border-radius: 26px; }
+    .eyebrow { gap: 12px; font-size: 12px; }
+    .status-label { font-size: 22px; }
+    .thread-title { max-width: 190px; }
+    .lights { width: 68px; height: 68px; }
+    .light { width: 12px; height: 12px; }
+    .stats-row { grid-template-columns: repeat(3, 1fr); gap: 8px; }
+    .stat-card { padding: 10px 6px; border-radius: 12px; }
+    .stat-value { font-size: 16px; }
+    .timeline { padding: 12px 14px; border-radius: 16px; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .activity-bar, .light, .orb { animation: none !important; transition: none; }
+  }
+  /* Layout wrapper */
+  .dashboard {
+    position: relative;
+    z-index: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 16px;
+    width: min(520px, 100%);
+  }
+  /* Session list */
+  .session-list {
+    width: 100%;
+    display: none;
+    flex-direction: column;
+    gap: 8px;
+    overflow: hidden;
+    padding: 14px 18px;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 20px;
+    background: linear-gradient(145deg, rgba(27, 32, 35, 0.88), rgba(10, 13, 15, 0.88));
+    backdrop-filter: blur(14px);
+  }
+  .session-list.visible { display: flex; }
+  .session-list-header {
+    color: #6b7479;
+    font-size: 11px;
+    font-weight: 650;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    margin-bottom: 2px;
+  }
+  .session-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 0;
+    border-top: 1px solid rgba(255, 255, 255, 0.04);
+  }
+  .session-item:first-of-type { border-top: none; padding-top: 4px; }
+  .session-dot {
+    width: 8px;
+    height: 8px;
+    flex-shrink: 0;
+    border-radius: 50%;
+    background: #3a3f42;
+    transition: background 0.3s, box-shadow 0.3s;
+  }
+  .session-dot.processing { background: #ff453a; box-shadow: 0 0 8px rgba(255,69,58,0.5); }
+  .session-dot.waiting { background: #ffd60a; box-shadow: 0 0 8px rgba(255,214,10,0.4); }
+  .session-dot.idle { background: #30d158; box-shadow: 0 0 8px rgba(48,209,88,0.4); }
+  .session-info {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+  }
+  .session-name {
+    overflow: hidden;
+    color: #c8cdd0;
+    font-size: 12px;
+    font-weight: 550;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .session-time {
+    flex-shrink: 0;
+    color: #4e575c;
+    font-size: 10px;
+    font-variant-numeric: tabular-nums;
+  }
+  /* Footer info bar */
+  .footer-info {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    color: #3a4145;
+    font-size: 10px;
+    letter-spacing: 0.3px;
+  }
+  .footer-info .dot {
+    width: 3px;
+    height: 3px;
+    border-radius: 50%;
+    background: #2a3033;
+  }
+  @media (max-width: 420px) {
+    .dashboard { gap: 12px; }
+    .session-list { padding: 12px 14px; border-radius: 16px; }
+    .footer-info { gap: 10px; font-size: 9px; }
+  }
+  /* ── Traffic Light Capsule（移动端灵动岛风格顶部浮窗） ── */
+  .traffic-capsule {
+    position: fixed;
+    top: 12px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 9999;
+    min-height: 32px;
+    border-radius: 9999px;
+    background: linear-gradient(180deg, #1d1d20 0%, #0b0b0d 18%, #050506 58%, #020203 100%);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    box-shadow:
+      0 0 30px rgba(0, 0, 0, 0.45),
+      0 0 10px rgba(0, 0, 0, 0.3);
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+    user-select: none;
+    transition: width 0.35s cubic-bezier(0.22, 1, 0.36, 1), height 0.35s cubic-bezier(0.22, 1, 0.36, 1);
+    overflow: hidden;
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+  }
+  .traffic-capsule.tc-idle { width: 108px; }
+  .traffic-capsule.tc-sessions { width: 140px; }
+  .traffic-capsule.tc-processing { width: 168px; }
+  .traffic-capsule.tc-waiting,
+  .traffic-capsule.tc-error,
+  .traffic-capsule.tc-offline { width: 186px; }
+  .traffic-capsule.tc-expanded { width: min(344px, calc(100vw - 24px)); }
+  .tc-halo {
+    position: absolute;
+    inset: -3px -2px -1px -2px;
+    border-radius: 9999px;
+    border: 1px solid transparent;
+    pointer-events: none;
+    opacity: 0.45;
+    transition: border-color 0.3s ease;
+  }
+  .tc-halo.pulse { animation: tc-halo-pulse 2s ease-in-out infinite; }
+  @keyframes tc-halo-pulse {
+    0%, 100% { opacity: 0.25; }
+    50% { opacity: 0.55; }
+  }
+  .tc-shell {
+    position: relative;
+    padding: 7px 16px;
+    min-height: 32px;
+    display: flex;
+    align-items: center;
+  }
+  .tc-shell::before {
+    content: '';
+    position: absolute;
+    top: 1px;
+    left: 6px;
+    right: 6px;
+    height: 10px;
+    border-radius: 9999px;
+    background: rgba(255, 255, 255, 0.07);
+    pointer-events: none;
+  }
+  /* 紧凑模式 */
+  .tc-compact {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    position: relative;
+    overflow: hidden;
+  }
+  .tc-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+    box-shadow: 0 0 8px currentColor, 0 0 16px currentColor;
+    transition: all 0.3s ease;
+  }
+  .tc-dot.breathing { animation: tc-breathe 1.2s ease-in-out infinite; }
+  @keyframes tc-breathe {
+    0%, 100% { box-shadow: 0 0 6px currentColor, 0 0 12px currentColor; }
+    50% { box-shadow: 0 0 14px currentColor, 0 0 28px currentColor; }
+  }
+  .tc-label {
+    font-size: 12px;
+    font-weight: 600;
+    color: #e8e8ed;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    line-height: 1;
+  }
+  .tc-count {
+    font-size: 11px;
+    font-weight: 500;
+    color: rgba(255, 255, 255, 0.45);
+    white-space: nowrap;
+    margin-left: auto;
+  }
+  .tc-progress {
+    position: absolute;
+    bottom: -7px;
+    left: 16px;
+    right: 12px;
+  }
+  .tc-progress-bar {
+    height: 2px;
+    border-radius: 1px;
+    background: linear-gradient(
+      90deg,
+      rgba(50, 244, 126, 0) 0%,
+      rgba(98, 244, 206, 0.75) 45%,
+      rgba(114, 215, 255, 0.6) 100%
+    );
+    animation: tc-scan 2.2s ease-in-out infinite;
+  }
+  @keyframes tc-scan {
+    0% { transform: translateX(-100%); }
+    100% { transform: translateX(100%); }
+  }
+  /* 展开模式 */
+  .tc-expanded-content {
+    width: 100%;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    cursor: default;
+  }
+  .tc-exp-header {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+  }
+  .tc-exp-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+  .tc-exp-meta {
+    font-size: 10px;
+    font-weight: 600;
+    color: #a1a1a6;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  .tc-exp-title {
+    font-size: 15px;
+    font-weight: 700;
+    color: #f5f5f7;
+  }
+  .tc-exp-detail {
+    font-size: 10px;
+    color: #a1a1a6;
+    font-weight: 500;
+  }
+  .tc-exp-progress {
+    margin-top: 2px;
+    margin-bottom: 2px;
+  }
+  .tc-exp-progress-bar {
+    height: 3px;
+    border-radius: 2px;
+    background: linear-gradient(
+      90deg,
+      rgba(50, 244, 126, 0) 0%,
+      rgba(98, 244, 206, 0.8) 45%,
+      rgba(114, 215, 255, 0.65) 100%
+    );
+    background-size: 200% 100%;
+    animation: tc-exp-scan 2.2s ease-in-out infinite;
+  }
+  @keyframes tc-exp-scan {
+    0% { background-position: 100% 0; }
+    100% { background-position: -100% 0; }
+  }
+  .tc-session-rows {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    margin-top: 2px;
+  }
+  .tc-session-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 5px 10px;
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.05);
+  }
+  .tc-session-dot {
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+  .tc-session-name {
+    flex: 1;
+    font-size: 11px;
+    font-weight: 600;
+    color: #e8e8ed;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .tc-session-badge {
+    font-size: 10px;
+    font-weight: 600;
+    white-space: nowrap;
+  }
+  @media (max-width: 360px) {
+    .traffic-capsule.tc-expanded { width: calc(100vw - 16px); }
+    .tc-shell { padding: 6px 12px; }
+  }
+</style>
+</head>
+<body class="state-idle">
+<!-- 移动端红绿灯胶囊（顶部灵动岛风格浮窗） -->
+<div class="traffic-capsule tc-idle" id="traffic-capsule" aria-live="polite">
+  <div class="tc-halo" id="tc-halo"></div>
+  <div class="tc-shell">
+    <!-- 紧凑模式 -->
+    <div class="tc-compact" id="tc-compact">
+      <span class="tc-dot" id="tc-dot"></span>
+      <span class="tc-label" id="tc-label">Codex</span>
+      <span class="tc-count" id="tc-count"></span>
+      <div class="tc-progress" id="tc-progress" style="display:none">
+        <div class="tc-progress-bar"></div>
+      </div>
+    </div>
+    <!-- 展开模式 -->
+    <div class="tc-expanded-content" id="tc-expanded" style="display:none">
+      <div class="tc-exp-header">
+        <span class="tc-exp-dot" id="tc-exp-dot"></span>
+        <span class="tc-exp-meta" id="tc-exp-meta">Codex</span>
+      </div>
+      <div class="tc-exp-title" id="tc-exp-title"></div>
+      <div class="tc-exp-detail" id="tc-exp-detail"></div>
+      <div class="tc-exp-progress" id="tc-exp-progress" style="display:none">
+        <div class="tc-exp-progress-bar"></div>
+      </div>
+      <div class="tc-session-rows" id="tc-session-rows"></div>
+    </div>
+  </div>
+</div>
+<canvas id="particles"></canvas>
+<div class="orb orb-1"></div>
+<div class="orb orb-2"></div>
+<div class="orb orb-3"></div>
+<div class="orb orb-4"></div>
+<div class="dashboard">
+  <section class="island idle" id="island" aria-live="polite">
+    <div class="content">
+      <div class="eyebrow">
+        <span>Codex</span>
+        <span class="session-count" id="session-count">0 会话</span>
+      </div>
+      <div class="status-label" id="status-label">正在读取状态</div>
+      <div class="thread-title" id="thread-title">正在同步会话</div>
+      <div class="activity-track" aria-hidden="true"><div class="activity-bar"></div></div>
+      <div class="error" id="error"></div>
+      <div class="status-time" id="status-time"></div>
+      <div class="task-timer" id="task-timer">
+        <span class="timer-dot"></span>
+        <span>已运行 </span>
+        <span id="task-duration">00:00</span>
+      </div>
+    </div>
+    <div class="lights" id="lights" role="status" aria-label="Codex 状态读取中">
+      <span class="light" id="light-red" aria-hidden="true"></span>
+      <span class="light" id="light-yellow" aria-hidden="true"></span>
+      <span class="light" id="light-green" aria-hidden="true"></span>
+    </div>
+  </section>
+  <div class="stats-row">
+    <div class="stat-card">
+      <span class="stat-value" id="stat-total">0</span>
+      <span class="stat-label">24h 会话</span>
+    </div>
+    <div class="stat-card">
+      <span class="stat-value" id="stat-active">0</span>
+      <span class="stat-label">活跃中</span>
+    </div>
+    <div class="stat-card">
+      <span class="stat-value" id="stat-idle">—</span>
+      <span class="stat-label">空闲时段</span>
+    </div>
+  </div>
+  <div class="usage-card" id="usage-card" style="display:none">
+    <div class="usage-header">
+      <span class="usage-title">用量统计</span>
+      <span class="plan-badge" id="plan-badge"></span>
+    </div>
+    <div class="usage-tokens">
+      <span class="token-big" id="token-24h">0</span>
+      <span class="token-label">tokens (24h)</span>
+    </div>
+    <div class="usage-sub" id="token-total"></div>
+    <div class="model-bars" id="model-bars"></div>
+    <div class="quota-windows" id="quota-windows" style="display:none">
+      <div class="quota-box">
+        <div class="quota-label">5小时额度</div>
+        <div class="quota-pct" id="quota-5h-pct">0%</div>
+        <div class="quota-bar-track"><div class="quota-bar-fill" id="quota-5h-bar"></div></div>
+        <div class="quota-detail">
+          <span id="quota-5h-used">0</span>
+          <span class="quota-recover" id="quota-5h-recover"></span>
+        </div>
+      </div>
+      <div class="quota-box">
+        <div class="quota-label">1周额度</div>
+        <div class="quota-pct" id="quota-7d-pct">0%</div>
+        <div class="quota-bar-track"><div class="quota-bar-fill" id="quota-7d-bar"></div></div>
+        <div class="quota-detail">
+          <span id="quota-7d-used">0</span>
+          <span class="quota-recover" id="quota-7d-recover"></span>
+        </div>
+      </div>
+    </div>
+    <div class="plan-sub-info" id="plan-sub-info"></div>
+  </div>
+  <div class="timeline" id="timeline">
+    <div class="timeline-header">状态时间线</div>
+    <div class="timeline-bar" id="timeline-bar"></div>
+    <div class="timeline-legend">
+      <span class="legend-item"><span class="legend-dot l-idle"></span>空闲</span>
+      <span class="legend-item"><span class="legend-dot l-processing"></span>处理</span>
+      <span class="legend-item"><span class="legend-dot l-waiting"></span>等待</span>
+    </div>
+  </div>
+  <div class="session-list" id="session-list">
+    <div class="session-list-header">活跃会话</div>
+  </div>
+  <div class="footer-info">
+    <span>Codex Status Monitor</span>
+    <span class="dot"></span>
+    <span id="footer-host"></span>
+    <span class="dot"></span>
+    <span id="footer-state">连接中</span>
+    <span class="dot"></span>
+    <span id="footer-uptime"></span>
+  </div>
+</div>
+
+<script>
+var el = document.getElementById.bind(document);
+var currentSessions = [];
+var sessionSignature = "";
+var carouselIndex = 0;
+var carouselTimer = null;
+var lastGoodStatus = null;
+var pageLoadTime = Date.now();
+var stateLabels = { idle: "空闲", processing: "处理中", waiting: "等待输入", offline: "离线", error: "异常" };
+
+function renderSessionTitle() {
+  if (!currentSessions.length) {
+    el("thread-title").textContent = "暂无活动会话";
+    return;
+  }
+  carouselIndex %= currentSessions.length;
+  el("thread-title").textContent = currentSessions[carouselIndex].title || "未命名会话";
+}
+
+function updateSessions(sessions) {
+  var nextSessions = Array.isArray(sessions) ? sessions : [];
+  var nextSignature = nextSessions.map(function(session) {
+    return session.state + ":" + session.title;
+  }).join("|");
+
+  if (nextSignature !== sessionSignature) {
+    currentSessions = nextSessions;
+    sessionSignature = nextSignature;
+    carouselIndex = 0;
+    renderSessionTitle();
+
+    if (carouselTimer) clearInterval(carouselTimer);
+    carouselTimer = currentSessions.length > 1 ? setInterval(function() {
+      carouselIndex = (carouselIndex + 1) % currentSessions.length;
+      renderSessionTitle();
+    }, 4000) : null;
+  }
+}
+
+function renderStatus(data) {
+  var light = data.light || "yellow";
+  var state = data.state || "error";
+  el("island").className = "island " + state;
+  if (window.__setParticleState) window.__setParticleState(state);
+  el("session-count").textContent = (data.sessionCount || 0) + " 会话";
+  el("status-label").textContent = data.label || "状态不可用";
+  el("light-red").className = "light" + (light === "red" ? " active-red" : "");
+  el("light-yellow").className = "light" + (light === "yellow" ? " active-yellow" : "");
+  el("light-green").className = "light" + (light === "green" ? " active-green" : "");
+  el("lights").setAttribute("aria-label", "Codex 状态：" + (data.label || "未知"));
+  updateSessions(data.sessions);
+  el("error").textContent = data.error || "";
+  el("error").className = "error" + (data.error ? " visible" : "");
+  el("status-time").textContent = data.updatedAt
+    ? "状态更新 " + new Date(data.updatedAt).toLocaleTimeString()
+    : "";
+  if (typeof renderSessionList === "function") renderSessionList(data.sessions);
+  el("footer-state").textContent = stateLabels[state] || state;
+  if (data.hostname) el("footer-host").textContent = data.hostname;
+  if (typeof updateStats === "function") updateStats(data);
+  if (typeof renderUsage === "function") renderUsage(data);
+}
+
+var DEFAULT_STATUS_API_BASE = "﻿https://baths-camp-crops-comments.trycloudflare.com";
+var STATUS_API_STORAGE_KEY = "codex_status_api_base";
+
+function normalizeApiBase(value) {
+  return (value || "").replace(/\/+$/, "");
+}
+
+function getStatusApiBase() {
+  var params = new URLSearchParams(window.location.search);
+  var apiParam = normalizeApiBase(params.get("api"));
+  if (apiParam) {
+    try { localStorage.setItem(STATUS_API_STORAGE_KEY, apiParam); } catch (err) {}
+    return apiParam;
+  }
+  if (window.CODEX_STATUS_API_BASE) return normalizeApiBase(window.CODEX_STATUS_API_BASE);
+  if (DEFAULT_STATUS_API_BASE) return normalizeApiBase(DEFAULT_STATUS_API_BASE);
+  try {
+    var stored = normalizeApiBase(localStorage.getItem(STATUS_API_STORAGE_KEY));
+    if (stored) return stored;
+  } catch (err) {}
+  if (window.location.protocol === "file:") return "http://127.0.0.1:3456";
+  return "";
+}
+
+function getStatusApiUrl() {
+  return getStatusApiBase() + "/api/status";
+}
+
+async function fetchStatus() {
+  try {
+    var response = await fetch(getStatusApiUrl(), { cache: "no-store" });
+    if (!response.ok) throw new Error("HTTP " + response.status);
+    var data = await response.json();
+    lastGoodStatus = data;
+    renderStatus(data);
+  } catch (err) {
+    if (lastGoodStatus) {
+      renderStatus(lastGoodStatus);
+      el("island").classList.add("disconnected");
+      el("error").textContent = "连接中断，正在显示上次状态";
+      el("error").className = "error visible";
+      return;
+    }
+    el("island").classList.add("offline-standalone");
+    renderStatus({
+      state: "offline",
+      light: "yellow",
+      label: "离线 - 请在本机运行 server.js",
+      sessionCount: 0,
+      sessions: [],
+      error: "",
+    });
+  }
+}
+
+fetchStatus();
+setInterval(fetchStatus, 2000);
+
+// Uptime tracking
+function updateUptime() {
+  var diff = Date.now() - pageLoadTime;
+  var sec = Math.floor(diff / 1000);
+  var min = Math.floor(sec / 60); sec %= 60;
+  var hr = Math.floor(min / 60); min %= 60;
+  var parts = [];
+  if (hr > 0) parts.push(hr + "h");
+  if (min > 0 || hr > 0) parts.push(min + "m");
+  parts.push(sec + "s");
+  el("footer-uptime").textContent = "运行 " + parts.join(" ");
+}
+updateUptime();
+setInterval(updateUptime, 1000);
+
+// Session list rendering
+function renderSessionList(sessions) {
+  var list = el("session-list");
+  if (!sessions || sessions.length === 0) {
+    list.className = "session-list";
+    return;
+  }
+  list.className = "session-list visible";
+  // Keep header, clear rest
+  while (list.children.length > 1) list.removeChild(list.lastChild);
+  var now = Date.now();
+  for (var i = 0; i < sessions.length; i++) {
+    var s = sessions[i];
+    var item = document.createElement("div");
+    item.className = "session-item";
+    var dot = document.createElement("span");
+    dot.className = "session-dot " + (s.state || "idle");
+    var info = document.createElement("div");
+    info.className = "session-info";
+    var name = document.createElement("span");
+    name.className = "session-name";
+    name.textContent = s.title || "未命名会话";
+    var time = document.createElement("span");
+    time.className = "session-time";
+    if (s.updatedAt) {
+      var ago = Math.round((now - s.updatedAt) / 1000);
+      if (ago < 60) time.textContent = ago + "秒前";
+      else if (ago < 3600) time.textContent = Math.floor(ago / 60) + "分钟前";
+      else time.textContent = Math.floor(ago / 3600) + "小时前";
+    }
+    info.appendChild(name);
+    info.appendChild(time);
+    item.appendChild(dot);
+    item.appendChild(info);
+    list.appendChild(item);
+  }
+}
+
+// Task duration timer
+var currentTaskStartedAt = null;
+function updateTaskTimer() {
+  var timer = el("task-timer");
+  var duration = el("task-duration");
+  if (!currentTaskStartedAt) {
+    timer.className = "task-timer";
+    return;
+  }
+  timer.className = "task-timer visible";
+  var elapsed = Math.floor((Date.now() - currentTaskStartedAt) / 1000);
+  var min = Math.floor(elapsed / 60);
+  var sec = elapsed % 60;
+  var hr = Math.floor(min / 60); min %= 60;
+  if (hr > 0) {
+    duration.textContent = hr + ":" + String(min).padStart(2, "0") + ":" + String(sec).padStart(2, "0");
+  } else {
+    duration.textContent = String(min).padStart(2, "0") + ":" + String(sec).padStart(2, "0");
+  }
+}
+setInterval(updateTaskTimer, 1000);
+
+// Stats and timeline
+var stateHistory = [];
+var MAX_HISTORY = 120;
+var prevState = null;
+var stateChangedAt = Date.now();
+
+function updateStats(data) {
+  el("stat-total").textContent = data.totalThreads || 0;
+  el("stat-active").textContent = data.sessionCount || 0;
+
+  // Calculate idle time
+  if (data.lastCompletedAt) {
+    var idleMs = Date.now() - data.lastCompletedAt;
+    if (data.state === "idle" && idleMs > 0) {
+      var idleMin = Math.floor(idleMs / 60000);
+      if (idleMin < 60) el("stat-idle").textContent = idleMin + "分钟";
+      else el("stat-idle").textContent = Math.floor(idleMin / 60) + "小时";
+    } else {
+      el("stat-idle").textContent = "—";
+    }
+  } else {
+    el("stat-idle").textContent = "—";
+  }
+
+  // Track task started time for timer
+  if (data.state === "processing" && data.sessions && data.sessions.length > 0) {
+    var started = data.sessions[0].lastStartedAt;
+    if (started && started > 0) currentTaskStartedAt = started;
+  } else {
+    currentTaskStartedAt = null;
+  }
+
+  // State history for timeline
+  var st = data.state || "offline";
+  if (st !== prevState) {
+    stateHistory.push({ state: st, time: Date.now() });
+    if (stateHistory.length > MAX_HISTORY) stateHistory.shift();
+    prevState = st;
+    stateChangedAt = Date.now();
+  }
+  renderTimeline();
+}
+
+function renderTimeline() {
+  var tl = el("timeline");
+  var bar = el("timeline-bar");
+  if (stateHistory.length < 2) { tl.className = "timeline"; return; }
+  tl.className = "timeline visible";
+  bar.innerHTML = "";
+  for (var i = 0; i < stateHistory.length; i++) {
+    var seg = document.createElement("div");
+    seg.className = "timeline-segment s-" + stateHistory[i].state;
+    var nextTime = (i < stateHistory.length - 1) ? stateHistory[i + 1].time : Date.now();
+    var dur = nextTime - stateHistory[i].time;
+    var h = Math.min(28, Math.max(6, Math.sqrt(dur / 1000) * 1.5));
+    seg.style.height = h + "px";
+    seg.title = stateLabels[stateHistory[i].state] + " — " + new Date(stateHistory[i].time).toLocaleTimeString();
+    bar.appendChild(seg);
+  }
+}
+
+// Usage rendering
+function formatTokens(n) {
+  if (!n) return "0";
+  if (n >= 1e9) return (n / 1e9).toFixed(1) + "B";
+  if (n >= 1e6) return (n / 1e6).toFixed(1) + "M";
+  if (n >= 1e3) return (n / 1e3).toFixed(0) + "K";
+  return String(n);
+}
+
+function renderUsage(data) {
+  var card = el("usage-card");
+  var ts = data.tokenStats;
+  var plan = data.plan;
+  if (!ts && !plan) { card.style.display = "none"; return; }
+  card.style.display = "";
+
+  // Plan badge
+  if (plan) {
+    var badge = el("plan-badge");
+    var planName = (plan.plan || "unknown").toUpperCase();
+    badge.textContent = planName;
+    badge.className = "plan-badge " + (plan.plan || "free");
+  }
+
+  // Token stats
+  if (ts) {
+    el("token-24h").textContent = formatTokens(ts.tokens24h);
+    el("token-total").textContent = "累计 " + formatTokens(ts.totalTokens) + " tokens";
+
+    // Model bars
+    var bars = el("model-bars");
+    bars.innerHTML = "";
+    if (ts.byModel && ts.byModel.length > 0) {
+      var maxTokens = ts.byModel[0].tokens;
+      var colorMap = { "gpt-5.5": "c-gpt55", "deepseek-v4-flash": "c-dsflash", "deepseek-v4-pro": "c-dspro" };
+      for (var i = 0; i < ts.byModel.length; i++) {
+        var m = ts.byModel[i];
+        var row = document.createElement("div");
+        row.className = "model-bar-row";
+        var name = document.createElement("span");
+        name.className = "model-bar-name";
+        name.textContent = m.model === "unknown" ? "其他" : m.model;
+        var track = document.createElement("div");
+        track.className = "model-bar-track";
+        var fill = document.createElement("div");
+        fill.className = "model-bar-fill " + (colorMap[m.model] || "c-other");
+        fill.style.width = Math.max(2, (m.tokens / maxTokens) * 100) + "%";
+        track.appendChild(fill);
+        var val = document.createElement("span");
+        val.className = "model-bar-val";
+        val.textContent = formatTokens(m.tokens);
+        row.appendChild(name);
+        row.appendChild(track);
+        row.appendChild(val);
+        bars.appendChild(row);
+      }
+    }
+  }
+
+  // Quota windows
+  var qw = el("quota-windows");
+  if (ts && (ts.h5remaining != null || ts.w7remaining != null)) {
+    qw.style.display = "";
+
+    // 5h percentage
+    if (ts.h5remaining != null) {
+      var h5pct = ts.h5remaining;
+      var h5el = el("quota-5h-pct");
+      h5el.textContent = h5pct + "%";
+      h5el.className = "quota-pct " + (h5pct <= 10 ? "low" : h5pct <= 30 ? "mid" : "high");
+      el("quota-5h-bar").style.width = h5pct + "%";
+      el("quota-5h-bar").style.background = h5pct <= 10 ? "#ff453a" : h5pct <= 30 ? "#ffd60a" : "#30d158";
+      el("quota-5h-used").textContent = formatTokens(ts.tokens5h) + " / " + formatTokens(ts.h5limit);
+    }
+
+    // 7d percentage
+    if (ts.w7remaining != null) {
+      var w7pct = ts.w7remaining;
+      var w7el = el("quota-7d-pct");
+      w7el.textContent = w7pct + "%";
+      w7el.className = "quota-pct " + (w7pct <= 10 ? "low" : w7pct <= 30 ? "mid" : "high");
+      el("quota-7d-bar").style.width = w7pct + "%";
+      el("quota-7d-bar").style.background = w7pct <= 10 ? "#ff453a" : w7pct <= 30 ? "#ffd60a" : "#30d158";
+      el("quota-7d-used").textContent = formatTokens(ts.tokens7d) + " / " + formatTokens(ts.w7limit);
+    }
+
+    // Store recovery timestamps for live countdown
+    window.__h5recoverAt = ts.h5recoverAt || null;
+    window.__w7recoverAt = ts.w7recoverAt || null;
+  } else {
+    qw.style.display = "none";
+  }
+
+  // Subscription info
+  if (plan && plan.activeUntil) {
+    var info = el("plan-sub-info");
+    var until = new Date(plan.activeUntil);
+    var now = new Date();
+    var daysLeft = Math.max(0, Math.ceil((until - now) / 86400000));
+    info.innerHTML = "<span>" + (plan.name || "") + "</span><span>订阅剩余 " + daysLeft + " 天</span>";
+  }
+}
+
+// Quota recovery countdown
+function formatCountdown(ms) {
+  if (ms <= 0) return "即将恢复";
+  var sec = Math.floor(ms / 1000);
+  var min = Math.floor(sec / 60); sec %= 60;
+  var hr = Math.floor(min / 60); min %= 60;
+  var day = Math.floor(hr / 24); hr %= 24;
+  if (day > 0) return day + "天 " + hr + "时 " + min + "分";
+  if (hr > 0) return hr + "时 " + min + "分 " + sec + "秒";
+  return min + "分 " + sec + "秒";
+}
+
+function updateQuotaCountdown() {
+  var now = Date.now();
+  var h5el = el("quota-5h-recover");
+  var w7el = el("quota-7d-recover");
+  if (window.__h5recoverAt && window.__h5recoverAt > now) {
+    h5el.innerHTML = '<span class="recover-icon"></span> ' + formatCountdown(window.__h5recoverAt - now) + " 后首批恢复";
+  } else if (window.__h5recoverAt) {
+    h5el.textContent = "已恢复";
+  } else {
+    h5el.textContent = "";
+  }
+  if (window.__w7recoverAt && window.__w7recoverAt > now) {
+    w7el.innerHTML = '<span class="recover-icon"></span> ' + formatCountdown(window.__w7recoverAt - now) + " 后首批恢复";
+  } else if (window.__w7recoverAt) {
+    w7el.textContent = "已恢复";
+  } else {
+    w7el.textContent = "";
+  }
+}
+setInterval(updateQuotaCountdown, 1000);
+updateQuotaCountdown();
+
+// Particle system
+(function() {
+  var canvas = document.getElementById("particles");
+  var ctx = canvas.getContext("2d");
+  var particles = [];
+  var count = 60;
+  var w, h;
+
+  var stateColors = {
+    idle:       { r: 48, g: 209, b: 88 },
+    processing: { r: 255, g: 69, b: 58 },
+    waiting:    { r: 255, g: 214, b: 10 },
+    offline:    { r: 100, g: 100, b: 100 },
+    error:      { r: 100, g: 100, b: 100 }
+  };
+  var currentColor = stateColors.idle;
+  var targetColor = stateColors.idle;
+
+  function resize() {
+    w = canvas.width = window.innerWidth;
+    h = canvas.height = window.innerHeight;
+  }
+  resize();
+  window.addEventListener("resize", resize);
+
+  for (var i = 0; i < count; i++) {
+    particles.push({
+      x: Math.random() * w,
+      y: Math.random() * h,
+      r: Math.random() * 1.8 + 0.4,
+      dx: (Math.random() - 0.5) * 0.3,
+      dy: (Math.random() - 0.5) * 0.3,
+      o: Math.random() * 0.4 + 0.1,
+      phase: Math.random() * Math.PI * 2
+    });
+  }
+
+  window.__setParticleState = function(state) {
+    targetColor = stateColors[state] || stateColors.idle;
+    document.body.className = "state-" + state;
+  };
+
+  function lerp(a, b, t) { return a + (b - a) * t; }
+
+  function draw(t) {
+    ctx.clearRect(0, 0, w, h);
+    currentColor.r = lerp(currentColor.r, targetColor.r, 0.02);
+    currentColor.g = lerp(currentColor.g, targetColor.g, 0.02);
+    currentColor.b = lerp(currentColor.b, targetColor.b, 0.02);
+    for (var i = 0; i < particles.length; i++) {
+      var p = particles[i];
+      p.x += p.dx;
+      p.y += p.dy;
+      if (p.x < -10) p.x = w + 10;
+      if (p.x > w + 10) p.x = -10;
+      if (p.y < -10) p.y = h + 10;
+      if (p.y > h + 10) p.y = -10;
+      var flicker = Math.sin(t * 0.001 + p.phase) * 0.15 + 0.85;
+      var alpha = p.o * flicker;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+      ctx.fillStyle = "rgba(" +
+        Math.round(currentColor.r) + "," +
+        Math.round(currentColor.g) + "," +
+        Math.round(currentColor.b) + "," + alpha + ")";
+      ctx.fill();
+    }
+    requestAnimationFrame(draw);
+  }
+  requestAnimationFrame(draw);
+})();
+
+// ─── Traffic Light Capsule ───────────────────────────────────────────
+var tcStateColors = {
+  idle:       "#32f47e",
+  processing: "#ff453a",
+  waiting:    "#ffd60a",
+  offline:    "#8e8e93",
+  error:      "#ff7a45"
+};
+var tcStateLabels = {
+  idle:       "空闲",
+  processing: "正在处理",
+  waiting:    "等待输入",
+  offline:    "离线",
+  error:      "异常"
+};
+var tcExpanded = false;
+
+function tcToggle(e) {
+  tcExpanded = !tcExpanded;
+  tcRender();
+}
+
+function tcRender() {
+  var capsule = el("traffic-capsule");
+  var state = (lastGoodStatus && lastGoodStatus.state) || "offline";
+  var color = tcStateColors[state] || "#8e8e93";
+  var label = tcStateLabels[state] || state;
+  var sessions = (lastGoodStatus && lastGoodStatus.sessions) || [];
+  var count = sessions.length;
+  var isProcessing = state === "processing";
+  var isWaiting = state === "waiting";
+  var isError = state === "error";
+  var isOffline = state === "offline";
+  var isIdle = state === "idle";
+  var isAlert = isWaiting || isError || isOffline;
+  var hasSessions = count > 0;
+
+  // CSS classes
+  capsule.className = "traffic-capsule tc-" + state + (tcExpanded ? " tc-expanded" : "");
+
+  // Halo
+  var halo = el("tc-halo");
+  if (isAlert || isProcessing) {
+    halo.style.borderColor = color;
+    halo.className = "tc-halo pulse";
+  } else {
+    halo.className = "tc-halo";
+  }
+
+  // Compact vs Expanded
+  el("tc-compact").style.display = tcExpanded ? "none" : "";
+  el("tc-expanded").style.display = tcExpanded ? "" : "none";
+
+  if (tcExpanded) {
+    // Expanded mode
+    el("tc-exp-dot").style.backgroundColor = color;
+    el("tc-exp-dot").style.boxShadow = "0 0 6px " + color;
+    el("tc-exp-meta").textContent = "Codex · " + (hasSessions ? count + " 会话" : "无活跃会话");
+    el("tc-exp-title").textContent = label;
+    if (isProcessing) {
+      el("tc-exp-detail").textContent = "红绿灯循环，任务正在执行";
+    } else if (isWaiting) {
+      el("tc-exp-detail").textContent = "Codex 等待你的输入";
+    } else if (isError) {
+      el("tc-exp-detail").textContent = "回到 Codex 查看错误详情";
+    } else if (isOffline) {
+      el("tc-exp-detail").textContent = "无法连接到本地服务";
+    } else if (hasSessions) {
+      el("tc-exp-detail").textContent = "绿灯常亮，系统空闲";
+    } else {
+      el("tc-exp-detail").textContent = "暂无活跃会话";
+    }
+    el("tc-exp-progress").style.display = isProcessing ? "" : "none";
+
+    // Session rows
+    var rows = el("tc-session-rows");
+    rows.innerHTML = "";
+    if (!hasSessions) {
+      var row = document.createElement("div");
+      row.className = "tc-session-row";
+      row.innerHTML = '<span class="tc-session-dot" style="background-color:#6e6e73"></span><span class="tc-session-name">没有活跃会话</span><span class="tc-session-badge" style="color:#6e6e73">空闲</span>';
+      rows.appendChild(row);
+    } else {
+      for (var i = 0; i < Math.min(sessions.length, 3); i++) {
+        var s = sessions[i];
+        var sState = s.state || "idle";
+        var sColor = tcStateColors[sState] || "#6e6e73";
+        var sLabel = tcStateLabels[sState] || "空闲";
+        var sTitle = s.title || "未命名会话";
+        var row = document.createElement("div");
+        row.className = "tc-session-row";
+        row.innerHTML = '<span class="tc-session-dot" style="background-color:' + sColor + '"></span><span class="tc-session-name">' + escHtml(sTitle) + '</span><span class="tc-session-badge" style="color:' + sColor + '">' + sLabel + '</span>';
+        rows.appendChild(row);
+      }
+    }
+  } else {
+    // Compact mode
+    var dot = el("tc-dot");
+    dot.style.color = color;
+    dot.style.backgroundColor = color;
+    dot.className = "tc-dot" + (isProcessing ? " breathing" : "");
+    var displayLabel = isIdle && !hasSessions ? "Codex" : label;
+    if (hasSessions) displayLabel += " · " + count + " 会话";
+    el("tc-label").textContent = displayLabel;
+    el("tc-count").textContent = "";
+    el("tc-progress").style.display = isProcessing ? "" : "none";
+  }
+}
+
+function escHtml(str) {
+  var div = document.createElement("div");
+  div.textContent = str;
+  return div.innerHTML;
+}
+
+el("traffic-capsule").addEventListener("click", tcToggle);
+
+// ─── Periodic timeline refresh (fixes last-segment duration bug) ─────
+function periodicTimelineRefresh() {
+  if (stateHistory.length >= 2) {
+    renderTimeline();
+  }
+  tcRender();
+}
+setInterval(periodicTimelineRefresh, 1000);
+</script>
+</body>
+</html>
