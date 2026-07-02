@@ -622,6 +622,7 @@
   }
   /* ── Traffic Light Capsule（移动端灵动岛风格顶部浮窗） ── */
   .traffic-capsule {
+    display: none !important;
     position: fixed;
     top: 12px;
     left: 50%;
@@ -1027,7 +1028,7 @@ function renderStatus(data) {
   if (typeof renderUsage === "function") renderUsage(data);
 }
 
-var DEFAULT_STATUS_API_BASE = "https://baths-camp-crops-comments.trycloudflare.com";
+var DEFAULT_STATUS_API_BASE = "https://particle-apt-fame-happens.trycloudflare.com/phone";
 var STATUS_API_STORAGE_KEY = "codex_status_api_base";
 
 function normalizeApiBase(value) {
