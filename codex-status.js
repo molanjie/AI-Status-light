@@ -198,7 +198,7 @@ function updateRolloutState(thread) {
 }
 
 function normalizeTitle(title) {
-  const normalized = String(title || "未命名会话")
+  const normalized = String(title || "未命名对话")
     .replace(/\[([^\]]+)\]\([^\)]+\)/g, "$1")
     .replace(/[*_`#>\[\]]+/g, "")
     .replace(/\s+/g, " ")
