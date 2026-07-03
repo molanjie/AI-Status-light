@@ -876,10 +876,10 @@
     <div class="content">
       <div class="eyebrow">
         <span>Codex</span>
-        <span class="session-count" id="session-count">0 会话</span>
+        <span class="session-count" id="session-count">0 对话</span>
       </div>
       <div class="status-label" id="status-label">正在读取状态</div>
-      <div class="thread-title" id="thread-title">正在同步会话</div>
+      <div class="thread-title" id="thread-title">正在同步对话</div>
       <div class="activity-track" aria-hidden="true"><div class="activity-bar"></div></div>
       <div class="error" id="error"></div>
       <div class="status-time" id="status-time"></div>
@@ -898,7 +898,7 @@
   <div class="stats-row">
     <div class="stat-card">
       <span class="stat-value" id="stat-total">0</span>
-      <span class="stat-label">24h 会话</span>
+      <span class="stat-label">24h 对话</span>
     </div>
     <div class="stat-card">
       <span class="stat-value" id="stat-active">0</span>
@@ -952,7 +952,7 @@
     </div>
   </div>
   <div class="session-list" id="session-list">
-    <div class="session-list-header">活跃会话</div>
+    <div class="session-list-header">活跃对话</div>
   </div>
   <div class="footer-info">
     <span>Codex Status Monitor</span>
@@ -977,11 +977,11 @@ var stateLabels = { idle: "空闲", processing: "处理中", waiting: "等待输
 
 function renderSessionTitle() {
   if (!currentSessions.length) {
-    el("thread-title").textContent = "暂无活动会话";
+    el("thread-title").textContent = "暂无活动对话";
     return;
   }
   carouselIndex %= currentSessions.length;
-  el("thread-title").textContent = currentSessions[carouselIndex].title || "未命名会话";
+  el("thread-title").textContent = currentSessions[carouselIndex].title || "未命名对话";
 }
 
 function updateSessions(sessions) {
@@ -1009,7 +1009,7 @@ function renderStatus(data) {
   var state = data.state || "error";
   el("island").className = "island " + state;
   if (window.__setParticleState) window.__setParticleState(state);
-  el("session-count").textContent = (data.sessionCount || 0) + " 会话";
+  el("session-count").textContent = (data.sessionCount || 0) + " 对话";
   el("status-label").textContent = data.label || "状态不可用";
   el("light-red").className = "light" + (light === "red" ? " active-red" : "");
   el("light-yellow").className = "light" + (light === "yellow" ? " active-yellow" : "");
@@ -1122,7 +1122,7 @@ function renderSessionList(sessions) {
     info.className = "session-info";
     var name = document.createElement("span");
     name.className = "session-name";
-    name.textContent = s.title || "未命名会话";
+    name.textContent = s.title || "未命名对话";
     var time = document.createElement("span");
     time.className = "session-time";
     if (s.updatedAt) {
@@ -1490,7 +1490,7 @@ function tcRender() {
     // Expanded mode
     el("tc-exp-dot").style.backgroundColor = color;
     el("tc-exp-dot").style.boxShadow = "0 0 6px " + color;
-    el("tc-exp-meta").textContent = "Codex · " + (hasSessions ? count + " 会话" : "无活跃会话");
+    el("tc-exp-meta").textContent = "Codex · " + (hasSessions ? count + " 对话" : "无活跃对话");
     el("tc-exp-title").textContent = label;
     if (isProcessing) {
       el("tc-exp-detail").textContent = "红绿灯循环，任务正在执行";
@@ -1503,7 +1503,7 @@ function tcRender() {
     } else if (hasSessions) {
       el("tc-exp-detail").textContent = "绿灯常亮，系统空闲";
     } else {
-      el("tc-exp-detail").textContent = "暂无活跃会话";
+      el("tc-exp-detail").textContent = "暂无活跃对话";
     }
     el("tc-exp-progress").style.display = isProcessing ? "" : "none";
 
@@ -1513,7 +1513,7 @@ function tcRender() {
     if (!hasSessions) {
       var row = document.createElement("div");
       row.className = "tc-session-row";
-      row.innerHTML = '<span class="tc-session-dot" style="background-color:#6e6e73"></span><span class="tc-session-name">没有活跃会话</span><span class="tc-session-badge" style="color:#6e6e73">空闲</span>';
+      row.innerHTML = '<span class="tc-session-dot" style="background-color:#6e6e73"></span><span class="tc-session-name">没有活跃对话</span><span class="tc-session-badge" style="color:#6e6e73">空闲</span>';
       rows.appendChild(row);
     } else {
       for (var i = 0; i < Math.min(sessions.length, 3); i++) {
@@ -1521,7 +1521,7 @@ function tcRender() {
         var sState = s.state || "idle";
         var sColor = tcStateColors[sState] || "#6e6e73";
         var sLabel = tcStateLabels[sState] || "空闲";
-        var sTitle = s.title || "未命名会话";
+        var sTitle = s.title || "未命名对话";
         var row = document.createElement("div");
         row.className = "tc-session-row";
         row.innerHTML = '<span class="tc-session-dot" style="background-color:' + sColor + '"></span><span class="tc-session-name">' + escHtml(sTitle) + '</span><span class="tc-session-badge" style="color:' + sColor + '">' + sLabel + '</span>';
@@ -1535,7 +1535,7 @@ function tcRender() {
     dot.style.backgroundColor = color;
     dot.className = "tc-dot" + (isProcessing ? " breathing" : "");
     var displayLabel = isIdle && !hasSessions ? "Codex" : label;
-    if (hasSessions) displayLabel += " · " + count + " 会话";
+    if (hasSessions) displayLabel += " · " + count + " 对话";
     el("tc-label").textContent = displayLabel;
     el("tc-count").textContent = "";
     el("tc-progress").style.display = isProcessing ? "" : "none";
