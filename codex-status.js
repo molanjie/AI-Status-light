@@ -99,14 +99,6 @@ function getTokenStats(databasePath) {
     return {
       totalTokens: total.t,
       tokens24h: day.t,
-      tokens5h: h5total,
-      tokens7d: w7total,
-      h5recoverAt,
-      w7recoverAt,
-      h5limit: H5_LIMIT,
-      w7limit: W7_LIMIT,
-      h5remaining: h5pct,
-      w7remaining: w7pct,
       byModel: byModel.map((r) => ({ model: r.model || "unknown", tokens: r.t })),
     };
   } finally {
