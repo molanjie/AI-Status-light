@@ -878,8 +878,8 @@
         <span>Codex</span>
         <span class="session-count" id="session-count">0 对话</span>
       </div>
-      <div class="status-label" id="status-label">正在读取状态</div>
-      <div class="thread-title" id="thread-title">正在同步对话</div>
+      <div class="status-label" id="status-label">连接中</div>
+      <div class="thread-title" id="thread-title">正在连接状态服务</div>
       <div class="activity-track" aria-hidden="true"><div class="activity-bar"></div></div>
       <div class="error" id="error"></div>
       <div class="status-time" id="status-time"></div>
@@ -972,6 +972,7 @@ var sessionSignature = "";
 var carouselIndex = 0;
 var carouselTimer = null;
 var lastGoodStatus = null;
+var lastSyncAt = null;
 var pageLoadTime = Date.now();
 var stateLabels = { idle: "空闲", processing: "处理中", waiting: "等待输入", offline: "离线", error: "异常" };
 
@@ -1056,18 +1057,25 @@ function getStatusApiUrl() {
   return getStatusApiBase() + "/api/status";
 }
 
+function formatSyncTime(ts) {
+  return new Date(ts).toLocaleTimeString();
+}
+
 async function fetchStatus() {
   try {
     var response = await fetch(getStatusApiUrl(), { cache: "no-store" });
     if (!response.ok) throw new Error("HTTP " + response.status);
     var data = await response.json();
     lastGoodStatus = data;
+    lastSyncAt = Date.now();
     renderStatus(data);
+    el("status-time").textContent = "已同步 " + formatSyncTime(lastSyncAt);
   } catch (err) {
     if (lastGoodStatus) {
       renderStatus(lastGoodStatus);
       el("island").classList.add("disconnected");
-      el("error").textContent = "连接中断，正在显示上次状态";
+      el("status-time").textContent = lastSyncAt ? "上次同步 " + formatSyncTime(lastSyncAt) : "";
+      el("error").textContent = "同步中断，正在显示上次状态";
       el("error").className = "error visible";
       return;
     }
@@ -1075,11 +1083,15 @@ async function fetchStatus() {
     renderStatus({
       state: "offline",
       light: "yellow",
-      label: "离线 - 请在本机运行 server.js",
+      label: "无法同步状态",
       sessionCount: 0,
       sessions: [],
       error: "",
     });
+    el("thread-title").textContent = "请确认本机服务或公网隧道正在运行";
+    el("status-time").textContent = "同步失败 " + formatSyncTime(Date.now());
+    el("error").textContent = "未连接到状态服务：" + getStatusApiUrl();
+    el("error").className = "error visible";
   }
 }
 
