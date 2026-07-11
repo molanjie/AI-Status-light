@@ -331,6 +331,9 @@
   .legend-dot.l-waiting { background: #ffd60a; }
   .legend-dot.l-offline { background: #3a3f42; }
   /* Usage & plan card */
+  #usage-card {
+    display: none !important;
+  }
   .usage-card {
     width: 100%;
     overflow: hidden;
@@ -1278,6 +1281,10 @@ function formatTokens(n) {
 
 function renderUsage(data) {
   var card = el("usage-card");
+  card.style.display = "none";
+  window.__h5recoverAt = null;
+  window.__w7recoverAt = null;
+  return;
   var ts = data.tokenStats;
   var plan = data.plan;
   if (!ts && !plan) { card.style.display = "none"; return; }
