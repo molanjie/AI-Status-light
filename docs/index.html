@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <!-- encoding: utf-8 -->
 <html lang="zh-CN">
 <head>
@@ -1036,25 +1036,49 @@ function normalizeApiBase(value) {
   return (value || "").replace(/\/+$/, "");
 }
 
-function getStatusApiBase() {
-  var params = new URLSearchParams(window.location.search);
-  var apiParam = normalizeApiBase(params.get("api"));
-  if (apiParam) {
-    try { localStorage.setItem(STATUS_API_STORAGE_KEY, apiParam); } catch (err) {}
-    return apiParam;
-  }
-  if (window.CODEX_STATUS_API_BASE) return normalizeApiBase(window.CODEX_STATUS_API_BASE);
-  if (DEFAULT_STATUS_API_BASE) return normalizeApiBase(DEFAULT_STATUS_API_BASE);
-  try {
-    var stored = normalizeApiBase(localStorage.getItem(STATUS_API_STORAGE_KEY));
-    if (stored) return stored;
-  } catch (err) {}
-  if (window.location.protocol === "file:") return "http://127.0.0.1:3456";
-  return "";
+function addStatusApiCandidate(list, value) {
+  var base = normalizeApiBase(value);
+  if (base && list.indexOf(base) === -1) list.push(base);
 }
 
-function getStatusApiUrl() {
-  return getStatusApiBase() + "/api/status";
+function getStatusApiBases() {
+  var list = [];
+  var params = new URLSearchParams(window.location.search);
+  addStatusApiCandidate(list, params.get("api"));
+  addStatusApiCandidate(list, window.CODEX_STATUS_API_BASE);
+  addStatusApiCandidate(list, DEFAULT_STATUS_API_BASE);
+  try {
+    addStatusApiCandidate(list, localStorage.getItem(STATUS_API_STORAGE_KEY));
+  } catch (err) {}
+  if (window.location.protocol === "file:") addStatusApiCandidate(list, "http://127.0.0.1:3456");
+  if (!list.length) list.push("");
+  return list;
+}
+
+function getStatusApiUrl(base) {
+  return normalizeApiBase(base) + "/api/status";
+}
+
+function rememberStatusApiBase(base) {
+  if (!base) return;
+  try { localStorage.setItem(STATUS_API_STORAGE_KEY, normalizeApiBase(base)); } catch (err) {}
+}
+
+function formatTriedStatusApis(urls) {
+  if (urls.length <= 2) return urls.join("，");
+  return urls.slice(0, 2).join("，") + " 等 " + urls.length + " 个地址";
+}
+
+async function fetchStatusFromApi(apiUrl) {
+  var controller = new AbortController();
+  var timeoutId = setTimeout(function () {
+    controller.abort();
+  }, 2500);
+  try {
+    return await fetch(apiUrl, { cache: "no-store", signal: controller.signal });
+  } finally {
+    clearTimeout(timeoutId);
+  }
 }
 
 function formatSyncTime(ts) {
@@ -1062,37 +1086,46 @@ function formatSyncTime(ts) {
 }
 
 async function fetchStatus() {
-  try {
-    var response = await fetch(getStatusApiUrl(), { cache: "no-store" });
-    if (!response.ok) throw new Error("HTTP " + response.status);
-    var data = await response.json();
-    lastGoodStatus = data;
-    lastSyncAt = Date.now();
-    renderStatus(data);
-    el("status-time").textContent = "已同步 " + formatSyncTime(lastSyncAt);
-  } catch (err) {
-    if (lastGoodStatus) {
-      renderStatus(lastGoodStatus);
-      el("island").classList.add("disconnected");
-      el("status-time").textContent = lastSyncAt ? "上次同步 " + formatSyncTime(lastSyncAt) : "";
-      el("error").textContent = "同步中断，正在显示上次状态";
-      el("error").className = "error visible";
+  var bases = getStatusApiBases();
+  var triedUrls = [];
+  for (var i = 0; i < bases.length; i += 1) {
+    var base = bases[i];
+    var apiUrl = getStatusApiUrl(base);
+    triedUrls.push(apiUrl);
+    try {
+      var response = await fetchStatusFromApi(apiUrl);
+      if (!response.ok) throw new Error("HTTP " + response.status);
+      var data = await response.json();
+      rememberStatusApiBase(base);
+      lastGoodStatus = data;
+      lastSyncAt = Date.now();
+      renderStatus(data);
+      el("status-time").textContent = "已同步 " + formatSyncTime(lastSyncAt);
       return;
-    }
-    el("island").classList.add("offline-standalone");
-    renderStatus({
-      state: "offline",
-      light: "yellow",
-      label: "无法同步状态",
-      sessionCount: 0,
-      sessions: [],
-      error: "",
-    });
-    el("thread-title").textContent = "请确认本机服务或公网隧道正在运行";
-    el("status-time").textContent = "同步失败 " + formatSyncTime(Date.now());
-    el("error").textContent = "未连接到状态服务：" + getStatusApiUrl();
-    el("error").className = "error visible";
+    } catch (err) {}
   }
+
+  if (lastGoodStatus) {
+    renderStatus(lastGoodStatus);
+    el("island").classList.add("disconnected");
+    el("status-time").textContent = lastSyncAt ? "上次同步 " + formatSyncTime(lastSyncAt) : "";
+    el("error").textContent = "同步中断，正在显示上次状态；已尝试：" + formatTriedStatusApis(triedUrls);
+    el("error").className = "error visible";
+    return;
+  }
+  el("island").classList.add("offline-standalone");
+  renderStatus({
+    state: "offline",
+    light: "yellow",
+    label: "无法同步状态",
+    sessionCount: 0,
+    sessions: [],
+    error: "",
+  });
+  el("thread-title").textContent = "请确认本机服务或公网隧道正在运行";
+  el("status-time").textContent = "同步失败 " + formatSyncTime(Date.now());
+  el("error").textContent = "未连接到状态服务：" + formatTriedStatusApis(triedUrls);
+  el("error").className = "error visible";
 }
 
 fetchStatus();
@@ -1573,3 +1606,4 @@ setInterval(periodicTimelineRefresh, 1000);
 </script>
 </body>
 </html>
+
