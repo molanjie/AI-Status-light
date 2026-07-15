@@ -6,7 +6,7 @@ const { DatabaseSync } = require("node:sqlite");
 
 const CODEX_HOME = path.join(process.env.USERPROFILE || process.env.HOME || "", ".codex");
 const ACTIVE_STALE_MS = 30 * 60 * 1000;
-const WAITING_WINDOW_MS = 5 * 60 * 1000;
+const COMPLETED_WINDOW_MS = 10 * 1000;
 const RECENT_THREAD_MS = 24 * 60 * 60 * 1000;
 const MAX_INITIAL_READ = 32 * 1024 * 1024;
 const DATABASE_CACHE_MS = 30 * 1000;
@@ -248,7 +248,7 @@ function buildCodexStatus(running, threads, totalThreads, now = Date.now()) {
     return {
       source: "codex-local",
       state: "offline",
-      light: "red",
+      light: "yellow",
       label: "Codex 未运行",
       sessionCount: 0,
       sessions: [],
@@ -261,8 +261,9 @@ function buildCodexStatus(running, threads, totalThreads, now = Date.now()) {
   }
 
   const activeSessions = threads.filter((thread) => thread.active);
-  const waitingSessions = threads.filter((thread) =>
-    !thread.active && thread.lastCompletedAt && now - thread.lastCompletedAt < WAITING_WINDOW_MS
+  const waitingSessions = threads.filter((thread) => thread.waiting);
+  const completedSessions = threads.filter((thread) =>
+    !thread.active && thread.lastCompletedAt && now - thread.lastCompletedAt < COMPLETED_WINDOW_MS
   );
 
   const toPublicSession = (thread, state) => ({
@@ -301,6 +302,25 @@ function buildCodexStatus(running, threads, totalThreads, now = Date.now()) {
       state: "waiting",
       light: "yellow",
       label: "等待输入",
+      sessionCount: sessions.length,
+      sessions,
+      totalThreads,
+      hostname: os.hostname(),
+      lastCompletedAt,
+      updatedAt: now,
+      error: "",
+    };
+  }
+
+  if (completedSessions.length > 0) {
+    const sessions = completedSessions
+      .map((thread) => toPublicSession(thread, "completed"))
+      .sort((a, b) => b.updatedAt - a.updatedAt);
+    return {
+      source: "codex-local",
+      state: "completed",
+      light: "green",
+      label: "已完成",
       sessionCount: sessions.length,
       sessions,
       totalThreads,
@@ -360,8 +380,8 @@ function readCodexStatus() {
     const value = {
       source: "codex-local",
       state: "error",
-      light: "yellow",
-      label: "状态不可用",
+      light: "red",
+      label: "运行异常",
       sessionCount: 0,
       sessions: [],
       totalThreads: 0,

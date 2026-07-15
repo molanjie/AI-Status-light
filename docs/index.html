@@ -90,14 +90,30 @@
   body.state-waiting .orb-2 { background: radial-gradient(circle, rgba(255,200,50,0.3), transparent 70%); }
   body.state-waiting .orb-3 { background: radial-gradient(circle, rgba(255,180,0,0.25), transparent 70%); }
   body.state-waiting .orb-4 { background: radial-gradient(circle, rgba(255,214,10,0.2), transparent 70%); }
+  body.state-syncing .orb-1,
+  body.state-disconnected .orb-1 { background: radial-gradient(circle, rgba(255,214,10,0.35), transparent 70%); }
+  body.state-syncing .orb-2,
+  body.state-disconnected .orb-2 { background: radial-gradient(circle, rgba(255,200,50,0.22), transparent 70%); }
+  body.state-syncing .orb-3,
+  body.state-disconnected .orb-3 { background: radial-gradient(circle, rgba(120,120,120,0.18), transparent 70%); }
+  body.state-syncing .orb-4,
+  body.state-disconnected .orb-4 { background: radial-gradient(circle, rgba(255,214,10,0.16), transparent 70%); }
   body.state-idle .orb-1 { background: radial-gradient(circle, rgba(48,209,88,0.5), transparent 70%); }
   body.state-idle .orb-2 { background: radial-gradient(circle, rgba(64,156,255,0.4), transparent 70%); }
   body.state-idle .orb-3 { background: radial-gradient(circle, rgba(48,209,88,0.3), transparent 70%); }
   body.state-idle .orb-4 { background: radial-gradient(circle, rgba(100,210,130,0.25), transparent 70%); }
-  body.state-offline .orb-1, body.state-error .orb-1 { background: radial-gradient(circle, rgba(255,69,58,0.4), transparent 70%); opacity: 0.2; }
-  body.state-offline .orb-2, body.state-error .orb-2 { background: radial-gradient(circle, rgba(120,120,120,0.2), transparent 70%); opacity: 0.15; }
-  body.state-offline .orb-3, body.state-error .orb-3 { background: radial-gradient(circle, rgba(80,80,80,0.15), transparent 70%); opacity: 0.15; }
-  body.state-offline .orb-4, body.state-error .orb-4 { background: radial-gradient(circle, rgba(60,60,60,0.1), transparent 70%); opacity: 0.1; }
+  body.state-completed .orb-1 { background: radial-gradient(circle, rgba(48,209,88,0.55), transparent 70%); }
+  body.state-completed .orb-2 { background: radial-gradient(circle, rgba(100,240,150,0.34), transparent 70%); }
+  body.state-completed .orb-3 { background: radial-gradient(circle, rgba(48,209,88,0.28), transparent 70%); }
+  body.state-completed .orb-4 { background: radial-gradient(circle, rgba(64,156,255,0.25), transparent 70%); }
+  body.state-offline .orb-1 { background: radial-gradient(circle, rgba(255,214,10,0.26), transparent 70%); opacity: 0.22; }
+  body.state-offline .orb-2 { background: radial-gradient(circle, rgba(120,120,120,0.2), transparent 70%); opacity: 0.15; }
+  body.state-offline .orb-3 { background: radial-gradient(circle, rgba(80,80,80,0.15), transparent 70%); opacity: 0.15; }
+  body.state-offline .orb-4 { background: radial-gradient(circle, rgba(255,214,10,0.14), transparent 70%); opacity: 0.12; }
+  body.state-error .orb-1 { background: radial-gradient(circle, rgba(255,69,58,0.4), transparent 70%); opacity: 0.25; }
+  body.state-error .orb-2 { background: radial-gradient(circle, rgba(120,120,120,0.2), transparent 70%); opacity: 0.15; }
+  body.state-error .orb-3 { background: radial-gradient(circle, rgba(80,80,80,0.15), transparent 70%); opacity: 0.15; }
+  body.state-error .orb-4 { background: radial-gradient(circle, rgba(60,60,60,0.1), transparent 70%); opacity: 0.1; }
   .island {
     position: relative;
     z-index: 1;
@@ -170,8 +186,11 @@
     animation: scan 1.5s ease-in-out infinite;
   }
   .island.waiting .activity-bar { background: #ffd60a; opacity: 0.75; }
-  .island.idle .activity-bar { background: #30d158; opacity: 0.72; }
-  .island.offline .activity-bar,
+  .island.syncing .activity-bar,
+  .island.disconnected .activity-bar,
+  .island.offline .activity-bar { background: #ffd60a; opacity: 0.72; }
+  .island.idle .activity-bar,
+  .island.completed .activity-bar { background: #30d158; opacity: 0.72; }
   .island.error .activity-bar { background: #ff453a; opacity: 0.72; }
   .lights {
     width: 78px;
@@ -199,6 +218,24 @@
   .light.active-yellow { background: #ffd60a; box-shadow: 0 0 16px #ffd60aaa; }
   .light.active-green { background: #30d158; box-shadow: 0 0 16px #30d158aa; }
   .light.active-red, .light.active-yellow, .light.active-green { transform: scale(1.12); }
+  .island.processing .light {
+    animation: redChase 0.9s ease-in-out infinite;
+  }
+  .island.processing .light:nth-child(2) { animation-delay: 0.14s; }
+  .island.processing .light:nth-child(3) { animation-delay: 0.28s; }
+  .island.waiting .light.active-yellow,
+  .island.syncing .light.active-yellow {
+    animation: yellowBreath 1.4s ease-in-out infinite;
+  }
+  .island.disconnected .light.active-yellow {
+    animation: yellowAlert 0.9s ease-in-out infinite;
+  }
+  .island.completed .light.active-green {
+    animation: greenComplete 1.1s ease-out infinite;
+  }
+  .island.error .light.active-red {
+    animation: redAlert 0.72s ease-in-out infinite;
+  }
   .error {
     display: none;
     margin-top: 7px;
@@ -217,6 +254,26 @@
   @keyframes scan {
     0% { transform: translateX(-100%); }
     100% { transform: translateX(100%); }
+  }
+  @keyframes redChase {
+    0%, 100% { transform: scale(0.92); box-shadow: inset 0 -3px 5px rgba(0, 0, 0, 0.35); }
+    38% { transform: scale(1.22); background: #ff453a; box-shadow: 0 0 18px rgba(255, 69, 58, 0.75); }
+  }
+  @keyframes yellowBreath {
+    0%, 100% { transform: scale(1.02); box-shadow: 0 0 10px rgba(255, 214, 10, 0.45); }
+    50% { transform: scale(1.22); box-shadow: 0 0 22px rgba(255, 214, 10, 0.85); }
+  }
+  @keyframes yellowAlert {
+    0%, 100% { transform: scale(1); opacity: 0.72; }
+    50% { transform: scale(1.18); opacity: 1; box-shadow: 0 0 22px rgba(255, 214, 10, 0.9); }
+  }
+  @keyframes greenComplete {
+    0% { transform: scale(1.28); box-shadow: 0 0 26px rgba(48, 209, 88, 0.9); }
+    100% { transform: scale(1.08); box-shadow: 0 0 14px rgba(48, 209, 88, 0.55); }
+  }
+  @keyframes redAlert {
+    0%, 100% { transform: scale(1); opacity: 0.78; }
+    50% { transform: scale(1.22); opacity: 1; box-shadow: 0 0 24px rgba(255, 69, 58, 0.95); }
   }
   /* Stats card */
   .stats-row {
@@ -306,8 +363,11 @@
     transition: background 0.3s;
   }
   .timeline-segment.s-idle { background: #30d158; }
+  .timeline-segment.s-completed { background: #30d158; }
   .timeline-segment.s-processing { background: #ff453a; }
   .timeline-segment.s-waiting { background: #ffd60a; }
+  .timeline-segment.s-syncing,
+  .timeline-segment.s-disconnected { background: #ffd60a; }
   .timeline-segment.s-offline { background: #3a3f42; }
   .timeline-legend {
     display: flex;
@@ -577,6 +637,7 @@
   }
   .session-dot.processing { background: #ff453a; box-shadow: 0 0 8px rgba(255,69,58,0.5); }
   .session-dot.waiting { background: #ffd60a; box-shadow: 0 0 8px rgba(255,214,10,0.4); }
+  .session-dot.completed { background: #30d158; box-shadow: 0 0 8px rgba(48,209,88,0.45); }
   .session-dot.idle { background: #30d158; box-shadow: 0 0 8px rgba(48,209,88,0.4); }
   .session-info {
     flex: 1;
@@ -837,7 +898,7 @@
   }
 </style>
 </head>
-<body class="state-idle">
+<body class="state-syncing">
 <!-- 移动端红绿灯胶囊（顶部灵动岛风格浮窗） -->
 <div class="traffic-capsule tc-idle" id="traffic-capsule" aria-live="polite">
   <div class="tc-halo" id="tc-halo"></div>
@@ -872,13 +933,13 @@
 <div class="orb orb-3"></div>
 <div class="orb orb-4"></div>
 <div class="dashboard">
-  <section class="island idle" id="island" aria-live="polite">
+  <section class="island syncing" id="island" aria-live="polite">
     <div class="content">
       <div class="eyebrow">
         <span>Codex</span>
         <span class="session-count" id="session-count">0 对话</span>
       </div>
-      <div class="status-label" id="status-label">连接中</div>
+      <div class="status-label" id="status-label">正在同步状态</div>
       <div class="thread-title" id="thread-title">正在连接状态服务</div>
       <div class="activity-track" aria-hidden="true"><div class="activity-bar"></div></div>
       <div class="error" id="error"></div>
@@ -891,7 +952,7 @@
     </div>
     <div class="lights" id="lights" role="status" aria-label="Codex 状态读取中">
       <span class="light" id="light-red" aria-hidden="true"></span>
-      <span class="light" id="light-yellow" aria-hidden="true"></span>
+      <span class="light active-yellow" id="light-yellow" aria-hidden="true"></span>
       <span class="light" id="light-green" aria-hidden="true"></span>
     </div>
   </section>
@@ -974,7 +1035,16 @@ var carouselTimer = null;
 var lastGoodStatus = null;
 var lastSyncAt = null;
 var pageLoadTime = Date.now();
-var stateLabels = { idle: "空闲", processing: "处理中", waiting: "等待输入", offline: "离线", error: "异常" };
+var stateLabels = {
+  idle: "空闲",
+  processing: "处理中",
+  waiting: "等待输入",
+  completed: "已完成",
+  syncing: "正在同步",
+  disconnected: "连接中断",
+  offline: "离线",
+  error: "异常"
+};
 
 function renderSessionTitle() {
   if (!currentSessions.length) {
@@ -1027,6 +1097,27 @@ function renderStatus(data) {
   if (data.hostname) el("footer-host").textContent = data.hostname;
   if (typeof updateStats === "function") updateStats(data);
   if (typeof renderUsage === "function") renderUsage(data);
+}
+
+function renderConnectionState(state, label, detail, triedUrls) {
+  renderStatus({
+    state: state,
+    light: "yellow",
+    label: label,
+    sessionCount: lastGoodStatus ? lastGoodStatus.sessionCount : 0,
+    sessions: lastGoodStatus ? lastGoodStatus.sessions : [],
+    totalThreads: lastGoodStatus ? lastGoodStatus.totalThreads : 0,
+    hostname: lastGoodStatus ? lastGoodStatus.hostname : "",
+    lastCompletedAt: lastGoodStatus ? lastGoodStatus.lastCompletedAt : null,
+    tokenStats: lastGoodStatus ? lastGoodStatus.tokenStats : null,
+    plan: lastGoodStatus ? lastGoodStatus.plan : null,
+    updatedAt: Date.now(),
+    error: ""
+  });
+  el("thread-title").textContent = detail;
+  el("status-time").textContent = lastSyncAt ? "上次同步 " + formatSyncTime(lastSyncAt) : "同步失败 " + formatSyncTime(Date.now());
+  el("error").textContent = triedUrls && triedUrls.length ? "已尝试：" + formatTriedStatusApis(triedUrls) : "";
+  el("error").className = "error" + (el("error").textContent ? " visible" : "");
 }
 
 var DEFAULT_STATUS_API_BASE = "https://lid-soap-profession-farmer.trycloudflare.com";
@@ -1107,26 +1198,10 @@ async function fetchStatus() {
   }
 
   if (lastGoodStatus) {
-    renderStatus(lastGoodStatus);
-    el("island").classList.add("disconnected");
-    el("status-time").textContent = lastSyncAt ? "上次同步 " + formatSyncTime(lastSyncAt) : "";
-    el("error").textContent = "同步中断，正在显示上次状态；已尝试：" + formatTriedStatusApis(triedUrls);
-    el("error").className = "error visible";
+    renderConnectionState("disconnected", "连接中断", "正在显示上次有效状态", triedUrls);
     return;
   }
-  el("island").classList.add("offline-standalone");
-  renderStatus({
-    state: "offline",
-    light: "yellow",
-    label: "无法同步状态",
-    sessionCount: 0,
-    sessions: [],
-    error: "",
-  });
-  el("thread-title").textContent = "请确认本机服务或公网隧道正在运行";
-  el("status-time").textContent = "同步失败 " + formatSyncTime(Date.now());
-  el("error").textContent = "未连接到状态服务：" + formatTriedStatusApis(triedUrls);
-  el("error").className = "error visible";
+  renderConnectionState("disconnected", "连接中断", "请确认本机服务或公网隧道正在运行", triedUrls);
 }
 
 fetchStatus();
@@ -1448,10 +1523,13 @@ renderPlanCountdown();
 
   var stateColors = {
     idle:       { r: 48, g: 209, b: 88 },
+    completed:  { r: 48, g: 209, b: 88 },
     processing: { r: 255, g: 69, b: 58 },
     waiting:    { r: 255, g: 214, b: 10 },
+    syncing:    { r: 255, g: 214, b: 10 },
+    disconnected: { r: 255, g: 214, b: 10 },
     offline:    { r: 100, g: 100, b: 100 },
-    error:      { r: 100, g: 100, b: 100 }
+    error:      { r: 255, g: 69, b: 58 }
   };
   var currentColor = stateColors.idle;
   var targetColor = stateColors.idle;
@@ -1513,15 +1591,21 @@ renderPlanCountdown();
 // ─── Traffic Light Capsule ───────────────────────────────────────────
 var tcStateColors = {
   idle:       "#32f47e",
+  completed:  "#32f47e",
   processing: "#ff453a",
   waiting:    "#ffd60a",
+  syncing:    "#ffd60a",
+  disconnected: "#ffd60a",
   offline:    "#8e8e93",
   error:      "#ff7a45"
 };
 var tcStateLabels = {
   idle:       "空闲",
+  completed:  "已完成",
   processing: "正在处理",
   waiting:    "等待输入",
+  syncing:    "正在同步",
+  disconnected: "连接中断",
   offline:    "离线",
   error:      "异常"
 };
@@ -1543,8 +1627,10 @@ function tcRender() {
   var isWaiting = state === "waiting";
   var isError = state === "error";
   var isOffline = state === "offline";
+  var isDisconnected = state === "disconnected";
+  var isSyncing = state === "syncing";
   var isIdle = state === "idle";
-  var isAlert = isWaiting || isError || isOffline;
+  var isAlert = isWaiting || isError || isOffline || isDisconnected || isSyncing;
   var hasSessions = count > 0;
 
   // CSS classes
@@ -1573,6 +1659,12 @@ function tcRender() {
       el("tc-exp-detail").textContent = "红绿灯循环，任务正在执行";
     } else if (isWaiting) {
       el("tc-exp-detail").textContent = "Codex 等待你的输入";
+    } else if (state === "completed") {
+      el("tc-exp-detail").textContent = "任务刚刚完成";
+    } else if (isDisconnected) {
+      el("tc-exp-detail").textContent = "状态连接中断，正在保留上次结果";
+    } else if (isSyncing) {
+      el("tc-exp-detail").textContent = "正在同步 Codex 状态";
     } else if (isError) {
       el("tc-exp-detail").textContent = "回到 Codex 查看错误详情";
     } else if (isOffline) {
