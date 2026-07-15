@@ -1031,6 +1031,7 @@ function renderStatus(data) {
 
 var DEFAULT_STATUS_API_BASE = "https://lid-soap-profession-farmer.trycloudflare.com";
 var STATUS_API_STORAGE_KEY = "codex_status_api_base";
+var STATUS_REFRESH_MS = 1000;
 
 function normalizeApiBase(value) {
   return (value || "").replace(/\/+$/, "");
@@ -1129,7 +1130,7 @@ async function fetchStatus() {
 }
 
 fetchStatus();
-setInterval(fetchStatus, 2000);
+setInterval(fetchStatus, STATUS_REFRESH_MS);
 
 // Uptime tracking
 function updateUptime() {
@@ -1276,10 +1277,45 @@ function formatTokens(n) {
   return String(n);
 }
 
+function formatDuration(ms) {
+  ms = Math.max(0, ms);
+  var sec = Math.floor(ms / 1000);
+  var min = Math.floor(sec / 60); sec %= 60;
+  var hr = Math.floor(min / 60); min %= 60;
+  var day = Math.floor(hr / 24); hr %= 24;
+  if (day > 0) return day + "天 " + hr + "小时 " + min + "分";
+  if (hr > 0) return hr + "小时 " + min + "分 " + sec + "秒";
+  if (min > 0) return min + "分 " + sec + "秒";
+  return sec + "秒";
+}
+
+function renderPlanCountdown() {
+  var info = el("plan-sub-info");
+  var plan = window.__planInfo;
+  if (!info || !plan) {
+    if (info) info.textContent = "";
+    return;
+  }
+  var name = plan.name || plan.email || "";
+  if (!plan.activeUntil) {
+    info.innerHTML = "<span>" + name + "</span><span>订阅时间未知</span>";
+    return;
+  }
+  var until = new Date(plan.activeUntil).getTime();
+  if (!Number.isFinite(until)) {
+    info.innerHTML = "<span>" + name + "</span><span>订阅时间未知</span>";
+    return;
+  }
+  var diff = until - Date.now();
+  var label = diff > 0 ? "订阅剩余 " + formatDuration(diff) : "订阅已到期";
+  info.innerHTML = "<span>" + name + "</span><span>" + label + "</span>";
+}
+
 function renderUsage(data) {
   var card = el("usage-card");
   var ts = data.tokenStats;
   var plan = data.plan;
+  window.__planInfo = plan || null;
   if (!ts && !plan) { card.style.display = "none"; return; }
   card.style.display = "";
 
@@ -1294,7 +1330,8 @@ function renderUsage(data) {
   // Token stats
   if (ts) {
     el("token-24h").textContent = formatTokens(ts.tokens24h);
-    el("token-total").textContent = "累计 " + formatTokens(ts.totalTokens) + " tokens";
+    var updatedText = data.updatedAt ? " · " + new Date(data.updatedAt).toLocaleTimeString() + " 更新" : "";
+    el("token-total").textContent = "累计 " + formatTokens(ts.totalTokens) + " tokens" + updatedText;
 
     // Model bars
     var bars = el("model-bars");
@@ -1362,14 +1399,7 @@ function renderUsage(data) {
     window.__w7recoverAt = null;
   }
 
-  // Subscription info
-  if (plan && plan.activeUntil) {
-    var info = el("plan-sub-info");
-    var until = new Date(plan.activeUntil);
-    var now = new Date();
-    var daysLeft = Math.max(0, Math.ceil((until - now) / 86400000));
-    info.innerHTML = "<span>" + (plan.name || "") + "</span><span>订阅剩余 " + daysLeft + " 天</span>";
-  }
+  renderPlanCountdown();
 }
 
 // Quota recovery countdown
@@ -1405,6 +1435,8 @@ function updateQuotaCountdown() {
 }
 setInterval(updateQuotaCountdown, 1000);
 updateQuotaCountdown();
+setInterval(renderPlanCountdown, 1000);
+renderPlanCountdown();
 
 // Particle system
 (function() {
