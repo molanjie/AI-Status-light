@@ -106,22 +106,38 @@ function getTokenStats(databasePath) {
   }
 }
 
+function normalizePlanInfo(auth, payload, fallbackRefreshedAt = null) {
+  const ai = payload["https://api.openai.com/auth"];
+  if (!ai) return null;
+
+  const plan = ai.chatgpt_plan_type || "unknown";
+  const activeUntil = ai.chatgpt_subscription_active_until || null;
+  const refreshedAt = auth.last_refresh || fallbackRefreshedAt || null;
+  const activeUntilMs = activeUntil ? Date.parse(activeUntil) : NaN;
+  const refreshedAtMs = refreshedAt ? Date.parse(refreshedAt) : NaN;
+  const renewalPending = plan === "plus" && Number.isFinite(activeUntilMs) &&
+    Number.isFinite(refreshedAtMs) && activeUntilMs < refreshedAtMs;
+
+  return {
+    plan,
+    activeSince: ai.chatgpt_subscription_active_start || null,
+    activeUntil: renewalPending ? null : activeUntil,
+    subscriptionStatus: renewalPending ? "renewal_pending" : activeUntil ? "active" : "unknown",
+    refreshedAt,
+    email: payload.email || null,
+    name: payload.name || null,
+  };
+}
+
 function getPlanInfo() {
   try {
     const authPath = path.join(CODEX_HOME, "auth.json");
+    const authStat = fs.statSync(authPath);
     const auth = JSON.parse(fs.readFileSync(authPath, "utf8"));
     const idToken = auth.tokens && auth.tokens.id_token;
     if (!idToken) return null;
     const payload = JSON.parse(Buffer.from(idToken.split(".")[1], "base64url").toString());
-    const ai = payload["https://api.openai.com/auth"];
-    if (!ai) return null;
-    return {
-      plan: ai.chatgpt_plan_type || "unknown",
-      activeSince: ai.chatgpt_subscription_active_start || null,
-      activeUntil: ai.chatgpt_subscription_active_until || null,
-      email: payload.email || null,
-      name: payload.name || null,
-    };
+    return normalizePlanInfo(auth, payload, authStat.mtime.toISOString());
   } catch {
     return null;
   }
@@ -396,4 +412,4 @@ function readCodexStatus() {
   }
 }
 
-module.exports = { buildCodexStatus, findLatestStateDatabase, readCodexStatus };
+module.exports = { buildCodexStatus, findLatestStateDatabase, normalizePlanInfo, readCodexStatus };

@@ -1372,6 +1372,12 @@ function renderPlanCountdown() {
     return;
   }
   var name = plan.name || plan.email || "";
+  if (plan.subscriptionStatus === "renewal_pending") {
+    var refreshedAt = plan.refreshedAt ? new Date(plan.refreshedAt).toLocaleString() : "";
+    var pendingLabel = "续订时间待同步" + (refreshedAt ? "（上次核对 " + refreshedAt + "）" : "");
+    info.innerHTML = "<span>" + name + "</span><span>" + pendingLabel + "</span>";
+    return;
+  }
   if (!plan.activeUntil) {
     info.innerHTML = "<span>" + name + "</span><span>订阅时间未知</span>";
     return;
