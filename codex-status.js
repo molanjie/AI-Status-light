@@ -129,6 +129,27 @@ function normalizePlanInfo(auth, payload, fallbackRefreshedAt = null) {
   };
 }
 
+function applySubscriptionRenewalDate(planInfo, renewalDate) {
+  if (!planInfo || planInfo.plan !== "plus") return planInfo;
+
+  const normalizedDate = String(renewalDate || "").trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(normalizedDate)) return planInfo;
+
+  const parsedAt = Date.parse(normalizedDate + "T00:00:00Z");
+  if (!Number.isFinite(parsedAt) || new Date(parsedAt).toISOString().slice(0, 10) !== normalizedDate) {
+    return planInfo;
+  }
+
+  return {
+    ...planInfo,
+    activeUntil: null,
+    renewalDate: normalizedDate,
+    renewalDateOnly: true,
+    subscriptionStatus: "active",
+    subscriptionSource: "billing",
+  };
+}
+
 function getPlanInfo() {
   try {
     const authPath = path.join(CODEX_HOME, "auth.json");
@@ -137,7 +158,8 @@ function getPlanInfo() {
     const idToken = auth.tokens && auth.tokens.id_token;
     if (!idToken) return null;
     const payload = JSON.parse(Buffer.from(idToken.split(".")[1], "base64url").toString());
-    return normalizePlanInfo(auth, payload, authStat.mtime.toISOString());
+    const planInfo = normalizePlanInfo(auth, payload, authStat.mtime.toISOString());
+    return applySubscriptionRenewalDate(planInfo, process.env.SUBSCRIPTION_RENEWAL_DATE);
   } catch {
     return null;
   }
@@ -412,4 +434,10 @@ function readCodexStatus() {
   }
 }
 
-module.exports = { buildCodexStatus, findLatestStateDatabase, normalizePlanInfo, readCodexStatus };
+module.exports = {
+  applySubscriptionRenewalDate,
+  buildCodexStatus,
+  findLatestStateDatabase,
+  normalizePlanInfo,
+  readCodexStatus,
+};

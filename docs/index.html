@@ -1372,6 +1372,16 @@ function renderPlanCountdown() {
     return;
   }
   var name = plan.name || plan.email || "";
+  if (plan.renewalDateOnly && plan.renewalDate) {
+    var renewalAt = new Date(plan.renewalDate + "T00:00:00").getTime();
+    var remainingDays = Number.isFinite(renewalAt)
+      ? Math.max(0, Math.floor((renewalAt - Date.now()) / 86400000))
+      : null;
+    var renewalLabel = "下次续订日 " + plan.renewalDate;
+    if (remainingDays !== null) renewalLabel += " · 距续订日约 " + remainingDays + " 天";
+    info.innerHTML = "<span>" + name + "</span><span>" + renewalLabel + "</span>";
+    return;
+  }
   if (plan.subscriptionStatus === "renewal_pending") {
     var refreshedAt = plan.refreshedAt ? new Date(plan.refreshedAt).toLocaleString() : "";
     var pendingLabel = "续订时间待同步" + (refreshedAt ? "（上次核对 " + refreshedAt + "）" : "");

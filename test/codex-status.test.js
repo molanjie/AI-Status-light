@@ -1,7 +1,7 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
 
-const { normalizePlanInfo } = require("../codex-status");
+const { applySubscriptionRenewalDate, normalizePlanInfo } = require("../codex-status");
 
 test("does not report an expired Plus subscription from a pre-refresh expiry claim", () => {
   assert.equal(
@@ -52,4 +52,24 @@ test("keeps a current subscription end date after the latest token refresh", () 
 
   assert.equal(result.activeUntil, "2026-08-12T03:30:45+00:00");
   assert.equal(result.subscriptionStatus, "active");
+});
+
+test("uses the confirmed billing renewal date instead of stale token metadata", () => {
+  assert.equal(typeof applySubscriptionRenewalDate, "function");
+  if (typeof applySubscriptionRenewalDate !== "function") return;
+
+  const result = applySubscriptionRenewalDate(
+    {
+      plan: "plus",
+      activeUntil: null,
+      subscriptionStatus: "renewal_pending",
+    },
+    "2026-08-12"
+  );
+
+  assert.equal(result.activeUntil, null);
+  assert.equal(result.renewalDate, "2026-08-12");
+  assert.equal(result.renewalDateOnly, true);
+  assert.equal(result.subscriptionStatus, "active");
+  assert.equal(result.subscriptionSource, "billing");
 });
