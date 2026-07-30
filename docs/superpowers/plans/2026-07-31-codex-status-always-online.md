@@ -1275,18 +1275,14 @@ git commit -m "feat: install status watchdog at user logon"
 
 ---
 
-### Task 7: Deploy and Prove Self-Recovery End to End
+### Task 7: Add the Live Page Verification Runner
 
 **Files:**
-- Verify all files from Tasks 1-6.
 - Create: `scripts/verify-live-page.js`
-- Runtime-only writes: `%LOCALAPPDATA%\CodexStatusLight`.
-- Remote runtime branch: `live-status`.
-- Published source: `master/docs`.
 
 **Interfaces:**
-- Consumes: all implementation tasks, current `gh` authentication, installed cloudflared, and GitHub Pages.
-- Produces: a live fixed page, initialized endpoint registry, running scheduled task, Playwright verification output, and evidence for every acceptance criterion.
+- Consumes: the page DOM and connection behavior produced by Tasks 2 and 3.
+- Produces: a reusable Playwright verifier for cached offline state, automatic reconnection, and responsive widths.
 
 - [ ] **Step 1: Add the executable live-page verifier**
 
@@ -1389,6 +1385,46 @@ Expected: syntax check PASS.
 git add -- scripts/verify-live-page.js
 git commit -m "test: add live status recovery smoke check"
 ```
+
+---
+
+### Task 8: Deploy from the Stable Project Directory and Prove Self-Recovery
+
+**Files:**
+- Verify all files from Tasks 1-7.
+- Stable installation root: `C:\Users\Administrator\Documents\codex红绿灯`.
+- Runtime-only writes: `%LOCALAPPDATA%\CodexStatusLight`.
+- Remote runtime branch: `live-status`.
+- Published source: `master/docs`.
+
+**Interfaces:**
+- Consumes: a clean pre-deployment whole-branch review, branch `codex/status-always-online`, current `gh` authentication, installed cloudflared, and GitHub Pages.
+- Produces: a fast-forwarded stable checkout, live fixed page, initialized endpoint registry, running scheduled task bound to the stable checkout, and evidence for every acceptance criterion.
+
+- [ ] **Step 1: Fast-forward the reviewed branch into the stable checkout**
+
+Run from `C:\Users\Administrator\Documents\codex红绿灯`:
+
+```powershell
+git status --short --branch
+git merge --ff-only codex/status-always-online
+git status --short --branch
+```
+
+Expected: the merge is fast-forward only; the stable checkout contains every reviewed implementation commit; no tracked user change is overwritten; legacy runtime logs are ignored.
+
+- [ ] **Step 2: Confirm the pre-deployment whole-branch review is clean**
+
+Read this plan's SDD ledger and the final review report. Require:
+
+```text
+Tasks 1-7: complete
+Pre-deployment whole-branch review: clean
+Open Critical findings: 0
+Open Important findings: 0
+```
+
+Do not push or install the task when any load-bearing finding remains.
 
 - [ ] **Step 3: Run the complete pre-deployment gate**
 
