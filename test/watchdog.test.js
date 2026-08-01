@@ -333,6 +333,92 @@ test("PID replace failure preserves the prior claim and cleans the exact new chi
   }
 });
 
+test("PID commit failure preserves a prior claim with the new child PID", () => {
+  const escaped = modulePath.replace(/'/g, "''");
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "codex-status-pid-reused-"));
+  const pidFile = path.join(directory, "server.pid");
+  fs.writeFileSync(pidFile, "5252", "ascii");
+  const escapedDirectory = directory.replace(/'/g, "''");
+  const escapedPidFile = pidFile.replace(/'/g, "''");
+  try {
+    const script =
+      `Import-Module '${escaped}' -Force; ` +
+      `$global:child = [pscustomobject]@{ Id = 5252; Killed = 0; Waited = 0; Disposed = 0 }; ` +
+      `$global:child | Add-Member ScriptMethod Kill { $this.Killed++ }; ` +
+      `$global:child | Add-Member ScriptMethod WaitForExit { $this.Waited++; $true }; ` +
+      `$global:child | Add-Member ScriptMethod Dispose { $this.Disposed++ }; ` +
+      `$global:tempPath = ''; ` +
+      `try { Start-OwnedProcess -FilePath 'C:\\node.exe' -Arguments @('C:\\app path\\server.js') -WorkingDirectory '${escapedDirectory}' -PidFile '${escapedPidFile}' -OutputLog '${escapedDirectory}\\server.out.log' -ErrorLog '${escapedDirectory}\\server.err.log' -StartProcessAction { $global:child } -CommitPidAction { param($tempPath, $targetPath) $global:tempPath = $tempPath; throw 'injected commit failure' } | Out-Null } catch { $message = $_.Exception.Message }; ` +
+      `$targetExists = Test-Path -LiteralPath '${escapedPidFile}' -PathType Leaf; ` +
+      `$targetText = if ($targetExists) { [System.IO.File]::ReadAllText('${escapedPidFile}') } else { '<missing>' }; ` +
+      `"$message|$($global:child.Killed)|$($global:child.Waited)|$($global:child.Disposed)|$(Test-Path -LiteralPath $global:tempPath)|$targetExists|$targetText"`;
+
+    assert.equal(
+      powershell(script),
+      "injected commit failure|1|1|1|False|True|5252"
+    );
+    assert.deepEqual(
+      fs.readdirSync(directory).filter((name) => name.endsWith(".tmp")),
+      []
+    );
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("normal configuration skips auth while CheckConfiguration requires it", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "codex-status-auth-boundary-"));
+  const stateRoot = path.join(directory, "local-app-data");
+  const fakeGhPath = path.join(directory, "gh.exe");
+  const wherePath = path.join(process.env.WINDIR || "C:\\Windows", "System32", "where.exe");
+  fs.mkdirSync(stateRoot);
+  fs.copyFileSync(wherePath, fakeGhPath);
+
+  const env = {
+    ...process.env,
+    GH_TOKEN: " ",
+    LOCALAPPDATA: stateRoot,
+    PATH: `${directory};${process.env.PATH || ""}`,
+  };
+  const escapedModule = modulePath.replace(/'/g, "''");
+  const escapedRoot = root.replace(/'/g, "''");
+
+  try {
+    const normal = spawnSync(
+      "powershell.exe",
+      [
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        `Import-Module '${escapedModule}' -Force; $config = Resolve-WatchdogConfiguration -ProjectRoot '${escapedRoot}'; [Console]::Write($config.ghPath)`,
+      ],
+      { cwd: root, encoding: "utf8", env, windowsHide: true }
+    );
+    assert.equal(normal.status, 0, normal.stderr || normal.stdout);
+    assert.equal(path.resolve(normal.stdout.trim()).toLowerCase(), fakeGhPath.toLowerCase());
+    assert.equal(fs.existsSync(path.join(stateRoot, "CodexStatusLight")), false);
+
+    const preflight = spawnSync(
+      "powershell.exe",
+      [
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        watchdogPath,
+        "-CheckConfiguration",
+      ],
+      { cwd: root, encoding: "utf8", env, windowsHide: true }
+    );
+    assert.notEqual(preflight.status, 0, preflight.stdout + preflight.stderr);
+    assert.match(preflight.stdout + preflight.stderr, /GitHub authentication is unavailable/);
+    assert.equal(fs.existsSync(path.join(stateRoot, "CodexStatusLight")), false);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("configuration check does not create the watchdog state directory", () => {
   const stateRoot = fs.mkdtempSync(path.join(os.tmpdir(), "codex-status-config-"));
   try {

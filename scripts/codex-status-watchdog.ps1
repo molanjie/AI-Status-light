@@ -9,7 +9,9 @@ $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 $modulePath = Join-Path $projectRoot 'scripts\CodexStatusWatchdog.psm1'
 Import-Module $modulePath -Force
-$config = Resolve-WatchdogConfiguration -ProjectRoot $projectRoot
+$config = Resolve-WatchdogConfiguration `
+  -ProjectRoot $projectRoot `
+  -RequireGitHubAuthentication:$CheckConfiguration
 
 if ($CheckConfiguration) {
   [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)

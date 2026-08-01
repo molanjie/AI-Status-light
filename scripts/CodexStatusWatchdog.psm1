@@ -322,14 +322,6 @@ function Start-OwnedProcess {
     if (Test-Path -LiteralPath $tempPath -PathType Leaf) {
       Remove-Item -LiteralPath $tempPath -Force -ErrorAction SilentlyContinue
     }
-    if ($null -ne $process -and (Test-Path -LiteralPath $PidFile -PathType Leaf)) {
-      try {
-        if ([System.IO.File]::ReadAllText($PidFile).Trim() -eq [string]$process.Id) {
-          Remove-Item -LiteralPath $PidFile -Force -ErrorAction SilentlyContinue
-        }
-      }
-      catch {}
-    }
     if ($null -ne $process) {
       try {
         $process.Dispose()
@@ -861,7 +853,8 @@ function Resolve-WatchdogConfiguration {
   [CmdletBinding()]
   param(
     [Parameter(Mandatory = $true)]
-    [string]$ProjectRoot
+    [string]$ProjectRoot,
+    [switch]$RequireGitHubAuthentication
   )
 
   $resolvedRoot = (Resolve-Path -LiteralPath $ProjectRoot -ErrorAction Stop).Path
@@ -914,7 +907,9 @@ function Resolve-WatchdogConfiguration {
     throw "Watchdog configuration is incomplete:`n - $($missing -join "`n - ")"
   }
 
-  Assert-GitHubAuthentication -GhPath $ghPath | Out-Null
+  if ($RequireGitHubAuthentication) {
+    Assert-GitHubAuthentication -GhPath $ghPath | Out-Null
+  }
 
   return [pscustomobject]@{
     projectRoot = $resolvedRoot
