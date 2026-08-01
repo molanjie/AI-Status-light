@@ -22,10 +22,10 @@ function validateApiBase(value) {
   const labels = hostname.split(".");
   const validLabel = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
   const isTryCloudflareHost =
-    labels.length >= 3 &&
-    labels.at(-2) === "trycloudflare" &&
-    labels.at(-1) === "com" &&
-    labels.slice(0, -2).every((label) => validLabel.test(label));
+    labels.length === 3 &&
+    validLabel.test(labels[0]) &&
+    labels[1] === "trycloudflare" &&
+    labels[2] === "com";
 
   if (
     parsed.protocol !== "https:" ||
@@ -52,11 +52,18 @@ function buildRegistry(apiBase, now = new Date()) {
 }
 
 async function readResponseBody(response) {
+  let text;
   try {
-    return await response.json();
+    text = await response.text();
+  } catch (error) {
+    return { message: `Unable to read response body: ${error.message}` };
+  }
+
+  if (!text) return {};
+  try {
+    return JSON.parse(text);
   } catch {
-    const text = await response.text();
-    return text ? { message: text } : {};
+    return text;
   }
 }
 

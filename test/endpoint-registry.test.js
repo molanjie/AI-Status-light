@@ -27,6 +27,7 @@ test("validates only HTTPS Quick Tunnel API bases", () => {
   );
   assert.throws(() => validateApiBase("http://valid-name.trycloudflare.com"));
   assert.throws(() => validateApiBase("https://example.com"));
+  assert.throws(() => validateApiBase("https://a.b.trycloudflare.com"));
 });
 
 test("creates an orphan live-status branch when it is missing", async () => {
@@ -53,8 +54,51 @@ test("creates an orphan live-status branch when it is missing", async () => {
     apiBase: "https://first.trycloudflare.com",
   });
   assert.equal(calls.length, 5);
-  assert.match(calls[4].options.body, /refs\/heads\/live-status/);
-  assert.match(calls[2].options.body, /endpoint\.json/);
+  assert.deepEqual(
+    calls.map(({ url, options }) => ({
+      method: options.method,
+      url,
+    })),
+    [
+      {
+        method: "GET",
+        url: "https://api.github.com/repos/molanjie/AI-Status-light/git/ref/heads/live-status",
+      },
+      {
+        method: "POST",
+        url: "https://api.github.com/repos/molanjie/AI-Status-light/git/blobs",
+      },
+      {
+        method: "POST",
+        url: "https://api.github.com/repos/molanjie/AI-Status-light/git/trees",
+      },
+      {
+        method: "POST",
+        url: "https://api.github.com/repos/molanjie/AI-Status-light/git/commits",
+      },
+      {
+        method: "POST",
+        url: "https://api.github.com/repos/molanjie/AI-Status-light/git/refs",
+      },
+    ]
+  );
+  const treeBody = JSON.parse(calls[2].options.body);
+  assert.deepEqual(treeBody.tree, [
+    {
+      path: "endpoint.json",
+      mode: "100644",
+      type: "blob",
+      sha: "blob-sha",
+    },
+  ]);
+  const commitBody = JSON.parse(calls[3].options.body);
+  assert.deepEqual(commitBody.parents, []);
+  assert.equal(commitBody.tree, "tree-sha");
+  const refBody = JSON.parse(calls[4].options.body);
+  assert.deepEqual(refBody, {
+    ref: "refs/heads/live-status",
+    sha: "commit-sha",
+  });
 });
 
 test("does not commit when the registered endpoint already matches", async () => {
@@ -186,6 +230,21 @@ test("includes GitHub method, path, status, and message in errors", async () => 
       assert.match(error.message, /GitHub GET \/git\/ref\/heads\/live-status failed with 403/);
       assert.match(error.message, /Bad credentials/);
       assert.doesNotMatch(error.message, /secret-token/);
+      return true;
+    }
+  );
+});
+
+test("preserves non-JSON GitHub error body after reading a real Response", async () => {
+  await assert.rejects(
+    publishEndpoint({
+      apiBase: "https://same.trycloudflare.com",
+      token: "test-token",
+      fetchImpl: async () => new Response("upstream gateway failure", { status: 502 }),
+    }),
+    (error) => {
+      assert.match(error.message, /GitHub GET \/git\/ref\/heads\/live-status failed with 502/);
+      assert.match(error.message, /upstream gateway failure/);
       return true;
     }
   );
