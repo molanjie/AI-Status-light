@@ -505,6 +505,25 @@ test("newest tunnel URL follows the newest valid log file timestamp", () => {
   }
 });
 
+test("reads the available tunnel log while a redirected writer keeps the other log open", () => {
+  const escaped = modulePath.replace(/'/g, "''");
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "codex-status-live-logs-"));
+  const outputLog = path.join(directory, "tunnel.out.log");
+  const errorLog = path.join(directory, "tunnel.err.log");
+  fs.writeFileSync(outputLog, "", "utf8");
+  fs.writeFileSync(errorLog, "https://live.trycloudflare.com", "utf8");
+  try {
+    const output = powershell(
+      `Import-Module '${escaped}' -Force; ` +
+        `$writer = [System.IO.File]::Open('${outputLog.replace(/'/g, "''")}', [System.IO.FileMode]::Open, [System.IO.FileAccess]::Write, [System.IO.FileShare]::Read); ` +
+        `try { Get-NewestTunnelUrlFromLogFiles -OutputLog '${outputLog.replace(/'/g, "''")}' -ErrorLog '${errorLog.replace(/'/g, "''")}' } finally { $writer.Dispose() }`
+    );
+    assert.equal(output, "https://live.trycloudflare.com");
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("public failure transition rotates only on the third consecutive failure", () => {
   const escaped = modulePath.replace(/'/g, "''");
   const script =

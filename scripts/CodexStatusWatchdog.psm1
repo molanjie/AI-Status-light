@@ -200,6 +200,33 @@ function Invoke-OwnedProcessRetirement {
   }
 }
 
+function Read-SharedTextFile {
+  [CmdletBinding()]
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$Path
+  )
+
+  $shareMode = [System.IO.FileShare]::ReadWrite -bor [System.IO.FileShare]::Delete
+  $stream = [System.IO.File]::Open(
+    $Path,
+    [System.IO.FileMode]::Open,
+    [System.IO.FileAccess]::Read,
+    $shareMode
+  )
+  $reader = $null
+  try {
+    $reader = New-Object System.IO.StreamReader($stream, [System.Text.Encoding]::UTF8, $true, 4096, $true)
+    return $reader.ReadToEnd()
+  }
+  finally {
+    if ($null -ne $reader) {
+      $reader.Dispose()
+    }
+    $stream.Dispose()
+  }
+}
+
 function Get-NewestTunnelUrlFromLogFiles {
   [CmdletBinding()]
   param(
@@ -214,7 +241,14 @@ function Get-NewestTunnelUrlFromLogFiles {
       continue
     }
 
-    $url = Get-TunnelUrlFromText -Text ([System.IO.File]::ReadAllText($logPath))
+    try {
+      $logText = Read-SharedTextFile -Path $logPath
+    }
+    catch [System.IO.IOException] {
+      continue
+    }
+
+    $url = Get-TunnelUrlFromText -Text $logText
     if (-not [string]::IsNullOrWhiteSpace($url)) {
       $item = Get-Item -LiteralPath $logPath -Force
       [pscustomobject]@{
