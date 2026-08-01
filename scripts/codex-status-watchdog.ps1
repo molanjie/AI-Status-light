@@ -69,14 +69,24 @@ $watchdogAction = {
   do {
     try {
       if (-not (Test-HttpEndpoint -Url $config.localHealthUrl -TimeoutSeconds 3)) {
-        if (Stop-OwnedProcessFromPidFile -PidFile $serverPidFile -ExpectedCommandLineFragments $serverFragments) {
-          Write-WatchdogLog 'stopped owned unhealthy server'
+        $replacement = Invoke-OwnedProcessReplacement -StopOwned {
+          Stop-OwnedProcessFromPidFile -PidFile $serverPidFile -ExpectedCommandLineFragments $serverFragments
+        } -ClearPid {
+          if (Test-Path -LiteralPath $serverPidFile -PathType Leaf) {
+            Remove-Item -LiteralPath $serverPidFile -Force
+          }
+        } -StartReplacement {
+          Start-OwnedProcess -FilePath $config.nodePath -Arguments @($config.serverPath) -PidFile $serverPidFile -OutputLog $serverOutputLog -ErrorLog $serverErrorLog | Out-Null
         }
-        if (Test-Path -LiteralPath $serverPidFile -PathType Leaf) {
-          Remove-Item -LiteralPath $serverPidFile -Force
+        if ($replacement.TerminationFailed) {
+          Write-WatchdogLog ("owned server termination failed: $($replacement.StopResult.Error)")
         }
-        Start-OwnedProcess -FilePath $config.nodePath -Arguments @($config.serverPath) -PidFile $serverPidFile -OutputLog $serverOutputLog -ErrorLog $serverErrorLog | Out-Null
-        Write-WatchdogLog 'started owned server'
+        else {
+          if ($replacement.StopResult.Status -eq 'Terminated') {
+            Write-WatchdogLog 'stopped owned unhealthy server'
+          }
+          Write-WatchdogLog 'started owned server'
+        }
       }
       else {
         $tunnel = Get-OwnedProcessFromPidFile -PidFile $tunnelPidFile -ExpectedCommandLineFragments $tunnelFragments
@@ -110,17 +120,29 @@ $watchdogAction = {
           }
           return $true
         } -RotateTunnel {
-          if (Stop-OwnedProcessFromPidFile -PidFile $tunnelPidFile -ExpectedCommandLineFragments $tunnelFragments) {
+          $retirement = Invoke-OwnedProcessRetirement -StopOwned {
+            Stop-OwnedProcessFromPidFile -PidFile $tunnelPidFile -ExpectedCommandLineFragments $tunnelFragments
+          } -ClearPid {
+            if (Test-Path -LiteralPath $tunnelPidFile -PathType Leaf) {
+              Remove-Item -LiteralPath $tunnelPidFile -Force
+            }
+          }
+          if ($retirement.TerminationFailed) {
+            Write-WatchdogLog ("owned tunnel termination failed: $($retirement.StopResult.Error)")
+            return $false
+          }
+          if ($retirement.StopResult.Status -eq 'Terminated') {
             Write-WatchdogLog 'stopped owned unhealthy tunnel'
           }
-          if (Test-Path -LiteralPath $tunnelPidFile -PathType Leaf) {
-            Remove-Item -LiteralPath $tunnelPidFile -Force
-          }
+          return $true
         }
         $publicState = $transition.State
 
         if ($transition.RotationRequested) {
           Write-WatchdogLog 'rotated owned tunnel after three public failures'
+        }
+        if ($transition.RotationFailed) {
+          Write-WatchdogLog 'owned tunnel rotation failed; preserving PID and failure state'
         }
         if ($transition.PublicationSucceeded) {
           Write-WatchdogLog ("published tunnel URL $tunnelUrl")

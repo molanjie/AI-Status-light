@@ -93,15 +93,94 @@ function Stop-OwnedProcessFromPidFile {
   # This lookup validates the one recorded PID immediately before terminating its CIM object.
   $process = Get-OwnedProcessFromPidFile -PidFile $PidFile -ExpectedCommandLineFragments $ExpectedCommandLineFragments
   if ($null -eq $process) {
-    return $false
+    return [pscustomobject]@{
+      Status = 'NoOwnedProcess'
+      Error = $null
+    }
   }
 
   try {
     $result = Invoke-CimMethod -InputObject $process -MethodName 'Terminate' -ErrorAction Stop
-    return $result.ReturnValue -eq 0
+    if ($result.ReturnValue -eq 0) {
+      return [pscustomobject]@{
+        Status = 'Terminated'
+        Error = $null
+      }
+    }
+
+    return [pscustomobject]@{
+      Status = 'TerminationFailed'
+      Error = "Win32_Process.Terminate returned $($result.ReturnValue)."
+    }
   }
   catch {
-    return $false
+    return [pscustomobject]@{
+      Status = 'TerminationFailed'
+      Error = $_.Exception.Message
+    }
+  }
+}
+
+function Invoke-OwnedProcessReplacement {
+  [CmdletBinding()]
+  param(
+    [Parameter(Mandatory = $true)]
+    [scriptblock]$StopOwned,
+    [Parameter(Mandatory = $true)]
+    [scriptblock]$ClearPid,
+    [Parameter(Mandatory = $true)]
+    [scriptblock]$StartReplacement
+  )
+
+  $stopResult = & $StopOwned
+  if ($null -eq $stopResult -or $stopResult.Status -eq 'TerminationFailed') {
+    return [pscustomobject]@{
+      ReplacementStarted = $false
+      TerminationFailed = $true
+      StopResult = $stopResult
+    }
+  }
+
+  if ($stopResult.Status -notin @('NoOwnedProcess', 'Terminated')) {
+    throw "Unexpected owned-process stop status: $($stopResult.Status)"
+  }
+
+  & $ClearPid | Out-Null
+  & $StartReplacement | Out-Null
+  return [pscustomobject]@{
+    ReplacementStarted = $true
+    TerminationFailed = $false
+    StopResult = $stopResult
+  }
+}
+
+function Invoke-OwnedProcessRetirement {
+  [CmdletBinding()]
+  param(
+    [Parameter(Mandatory = $true)]
+    [scriptblock]$StopOwned,
+    [Parameter(Mandatory = $true)]
+    [scriptblock]$ClearPid
+  )
+
+  $stopResult = & $StopOwned
+  if ($null -eq $stopResult -or $stopResult.Status -eq 'TerminationFailed') {
+    return [pscustomobject]@{
+      Succeeded = $false
+      TerminationFailed = $true
+      StopResult = $stopResult
+    }
+  }
+
+  if ($stopResult.Status -notin @('NoOwnedProcess', 'Terminated')) {
+    throw "Unexpected owned-process stop status: $($stopResult.Status)"
+  }
+
+  & $ClearPid | Out-Null
+  return [pscustomobject]@{
+    Succeeded = $true
+    TerminationFailed = $false
+    StopResult = $stopResult
   }
 }
 
@@ -180,13 +259,24 @@ function Invoke-PublicStatusTransition {
   $publicationAttempted = $false
   $publicationSucceeded = $false
   $rotationRequested = $false
+  $rotationFailed = $false
 
   if (-not $PublicStatusHealthy) {
     $State.PublicFailures = [int]$State.PublicFailures + 1
     if ($State.PublicFailures -ge 3) {
-      & $RotateTunnel | Out-Null
-      $State.PublicFailures = 0
-      $rotationRequested = $true
+      try {
+        $rotationSucceeded = [bool](& $RotateTunnel)
+      }
+      catch {
+        $rotationSucceeded = $false
+      }
+      if ($rotationSucceeded) {
+        $State.PublicFailures = 0
+        $rotationRequested = $true
+      }
+      else {
+        $rotationFailed = $true
+      }
     }
   }
   else {
@@ -205,6 +295,7 @@ function Invoke-PublicStatusTransition {
     PublicationAttempted = $publicationAttempted
     PublicationSucceeded = $publicationSucceeded
     RotationRequested = $rotationRequested
+    RotationFailed = $rotationFailed
   }
 }
 
@@ -338,6 +429,8 @@ Export-ModuleMember -Function @(
   'Test-ExpectedCommandLine',
   'Get-OwnedProcessFromPidFile',
   'Stop-OwnedProcessFromPidFile',
+  'Invoke-OwnedProcessReplacement',
+  'Invoke-OwnedProcessRetirement',
   'Get-NewestTunnelUrlFromLogFiles',
   'Clear-OwnedTunnelLogs',
   'Get-WatchdogIntervalSeconds',

@@ -127,9 +127,9 @@ test("stop path revalidates the exact PID and never terminates an ownership mism
       `$global:queries++; if ($ClassName -ne 'Win32_Process' -or $Filter -ne 'ProcessId = 4242') { throw 'unexpected query' }; ` +
       `[pscustomobject]@{ ProcessId = 4242; CommandLine = '"node.exe" C:\\other\\server.js' } }; ` +
       `function global:Invoke-CimMethod { $global:terminated++; throw 'must not terminate' }; ` +
-      `[string](Stop-OwnedProcessFromPidFile -PidFile '${pidFile.replace(/'/g, "''")}' -ExpectedCommandLineFragments @('node.exe', 'C:\\app\\server.js')); ` +
+      `[string]((Stop-OwnedProcessFromPidFile -PidFile '${pidFile.replace(/'/g, "''")}' -ExpectedCommandLineFragments @('node.exe', 'C:\\app\\server.js')).Status); ` +
       `"$global:queries|$global:terminated"`;
-    assert.deepEqual(powershell(script).split(/\r?\n/), ["False", "1|0"]);
+    assert.deepEqual(powershell(script).split(/\r?\n/), ["NoOwnedProcess", "1|0"]);
   } finally {
     fs.rmSync(pidFile, { force: true });
   }
@@ -148,9 +148,9 @@ test("stop path terminates the revalidated WMI process object without a bare PID
       `$global:queries++; if ($ClassName -ne 'Win32_Process' -or $Filter -ne 'ProcessId = 4242') { throw 'unexpected query' }; ` +
       `[pscustomobject]@{ ProcessId = 4242; CommandLine = '"node.exe" "C:\\app\\server.js"' } }; ` +
       `function global:Invoke-CimMethod { param($InputObject, $MethodName) if ($InputObject.ProcessId -ne 4242 -or $MethodName -ne 'Terminate') { throw 'unexpected termination' }; $global:terminated++; [pscustomobject]@{ ReturnValue = 0 } }; ` +
-      `[string](Stop-OwnedProcessFromPidFile -PidFile '${pidFile.replace(/'/g, "''")}' -ExpectedCommandLineFragments @('node.exe', 'C:\\app\\server.js')); ` +
+      `[string]((Stop-OwnedProcessFromPidFile -PidFile '${pidFile.replace(/'/g, "''")}' -ExpectedCommandLineFragments @('node.exe', 'C:\\app\\server.js')).Status); ` +
       `"$global:queries|$global:terminated"`;
-    assert.deepEqual(powershell(script).split(/\r?\n/), ["True", "1|1"]);
+    assert.deepEqual(powershell(script).split(/\r?\n/), ["Terminated", "1|1"]);
   } finally {
     fs.rmSync(pidFile, { force: true });
   }
@@ -241,4 +241,54 @@ test("mutex contention returns successfully and owned mutex release is guarantee
     `$owned | Add-Member ScriptMethod ReleaseMutex { $this.Released++ }; $owned | Add-Member ScriptMethod Dispose { $this.Disposed++ }; ` +
     `try { Invoke-WatchdogMutex -Mutex $owned -OnContention {} -Action { throw 'iteration failure' } | Out-Null } catch {}; "$($owned.Released)|$($owned.Disposed)"`;
   assert.deepEqual(powershell(script).split(/\r?\n/), ["False|0|1|0|1", "1|1"]);
+});
+
+test("nonzero and throwing termination retain the owned PID and report hard failure", () => {
+  const escaped = modulePath.replace(/'/g, "''");
+  const pidFile = path.join(os.tmpdir(), `codex-status-stop-failure-${process.pid}.pid`);
+  fs.writeFileSync(pidFile, "4242", "ascii");
+  try {
+    const script =
+      `Import-Module '${escaped}' -Force; ` +
+      `function global:Get-CimInstance { [pscustomobject]@{ ProcessId = 4242; CommandLine = '"node.exe" "C:\\app\\server.js"' } }; ` +
+      `function global:Invoke-CimMethod { [pscustomobject]@{ ReturnValue = 5 } }; ` +
+      `$first = (Stop-OwnedProcessFromPidFile -PidFile '${pidFile.replace(/'/g, "''")}' -ExpectedCommandLineFragments @('node.exe', 'C:\\app\\server.js')).Status; "$first|$(Test-Path -LiteralPath '${pidFile.replace(/'/g, "''")}')"; ` +
+      `function global:Invoke-CimMethod { throw 'access denied' }; ` +
+      `$second = (Stop-OwnedProcessFromPidFile -PidFile '${pidFile.replace(/'/g, "''")}' -ExpectedCommandLineFragments @('node.exe', 'C:\\app\\server.js')).Status; "$second|$(Test-Path -LiteralPath '${pidFile.replace(/'/g, "''")}')"`;
+    assert.deepEqual(powershell(script).split(/\r?\n/), ["TerminationFailed|True", "TerminationFailed|True"]);
+  } finally {
+    fs.rmSync(pidFile, { force: true });
+  }
+});
+
+test("server recovery retains ownership and suppresses replacement after termination failure", () => {
+  const escaped = modulePath.replace(/'/g, "''");
+  const pidFile = path.join(os.tmpdir(), `codex-status-server-recovery-${process.pid}.pid`);
+  fs.writeFileSync(pidFile, "4242", "ascii");
+  try {
+    const script =
+      `Import-Module '${escaped}' -Force; $global:clears = 0; $global:starts = 0; ` +
+      `$result = Invoke-OwnedProcessReplacement -StopOwned { [pscustomobject]@{ Status = 'TerminationFailed' } } -ClearPid { $global:clears++; Remove-Item -LiteralPath '${pidFile.replace(/'/g, "''")}' -Force } -StartReplacement { $global:starts++ }; ` +
+      `"$($result.ReplacementStarted)|$($result.TerminationFailed)|$global:clears|$global:starts|$(Test-Path -LiteralPath '${pidFile.replace(/'/g, "''")}')"`;
+    assert.deepEqual(powershell(script).split(/\r?\n/), ["False|True|0|0|True"]);
+  } finally {
+    fs.rmSync(pidFile, { force: true });
+  }
+});
+
+test("failed tunnel rotation retains ownership and the third public failure state", () => {
+  const escaped = modulePath.replace(/'/g, "''");
+  const pidFile = path.join(os.tmpdir(), `codex-status-tunnel-rotation-${process.pid}.pid`);
+  fs.writeFileSync(pidFile, "4242", "ascii");
+  try {
+    const script =
+      `Import-Module '${escaped}' -Force; $global:clears = 0; ` +
+      `$state = [pscustomobject]@{ PublicFailures = 2; LastPublishedUrl = $null }; $publish = { throw 'must not publish' }; ` +
+      `$rotate = { (Invoke-OwnedProcessRetirement -StopOwned { [pscustomobject]@{ Status = 'TerminationFailed' } } -ClearPid { $global:clears++; Remove-Item -LiteralPath '${pidFile.replace(/'/g, "''")}' -Force }).Succeeded }; ` +
+      `$result = Invoke-PublicStatusTransition -State $state -TunnelUrl 'https://new.trycloudflare.com' -PublicStatusHealthy $false -PublishTunnel $publish -RotateTunnel $rotate; ` +
+      `"$($result.State.PublicFailures)|$($result.RotationRequested)|$($result.RotationFailed)|$global:clears|$(Test-Path -LiteralPath '${pidFile.replace(/'/g, "''")}')"`;
+    assert.deepEqual(powershell(script).split(/\r?\n/), ["3|False|True|0|True"]);
+  } finally {
+    fs.rmSync(pidFile, { force: true });
+  }
 });
