@@ -19,6 +19,32 @@ function powershell(script) {
   return result.stdout.trim();
 }
 
+function runInstallerHarness(script) {
+  const harnessPath = path.join(
+    os.tmpdir(),
+    `codex-status-installer-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}.ps1`
+  );
+  fs.writeFileSync(
+    harnessPath,
+    `\uFEFF[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)\n${script}`,
+    "utf8"
+  );
+  try {
+    const result = spawnSync(
+      "powershell.exe",
+      ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", harnessPath],
+      { cwd: root, encoding: "utf8", windowsHide: true }
+    );
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    if (!result.stdout.trim()) {
+      throw new Error(JSON.stringify({ status: result.status, stdout: result.stdout, stderr: result.stderr }));
+    }
+    return result.stdout.trim();
+  } finally {
+    fs.rmSync(harnessPath, { force: true });
+  }
+}
+
 test("extracts the newest valid Quick Tunnel URL", () => {
   const escaped = modulePath.replace(/'/g, "''");
   const output = powershell(
@@ -274,6 +300,199 @@ test("server recovery retains ownership and suppresses replacement after termina
   } finally {
     fs.rmSync(pidFile, { force: true });
   }
+});
+
+test("installer describes the exact current-user task without mutating Task Scheduler", () => {
+  const installerPath = path.join(
+    root,
+    "scripts",
+    "install-codex-status-watchdog.ps1"
+  );
+  const result = spawnSync(
+    "powershell.exe",
+    [
+      "-NoProfile",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-File",
+      installerPath,
+      "-Describe",
+    ],
+    { cwd: root, encoding: "utf8", windowsHide: true }
+  );
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const descriptor = JSON.parse(result.stdout);
+  assert.equal(descriptor.taskName, "CodexStatusLightWatchdog");
+  assert.equal(descriptor.trigger, "AtLogOn");
+  assert.equal(descriptor.restartIntervalMinutes, 1);
+  assert.equal(descriptor.restartCount, 999);
+  assert.match(descriptor.arguments, /codex-status-watchdog\.ps1/);
+});
+
+test("installer describe mode never calls Task Scheduler cmdlets", () => {
+  const installerPath = path.join(root, "scripts", "install-codex-status-watchdog.ps1");
+  const escapedInstallerPath = installerPath.replace(/'/g, "''");
+  const output = runInstallerHarness(`
+function global:Get-ScheduledTask { throw 'scheduler mutation in Describe' }
+function global:New-ScheduledTaskAction { throw 'scheduler mutation in Describe' }
+function global:New-ScheduledTaskTrigger { throw 'scheduler mutation in Describe' }
+function global:New-ScheduledTaskSettingsSet { throw 'scheduler mutation in Describe' }
+function global:New-ScheduledTaskPrincipal { throw 'scheduler mutation in Describe' }
+function global:Register-ScheduledTask { throw 'scheduler mutation in Describe' }
+function global:Start-ScheduledTask { throw 'scheduler mutation in Describe' }
+function global:Unregister-ScheduledTask { throw 'scheduler mutation in Describe' }
+. '${escapedInstallerPath}' -Describe
+`);
+  const descriptor = JSON.parse(output);
+  assert.equal(descriptor.taskName, "CodexStatusLightWatchdog");
+  assert.equal(descriptor.trigger, "AtLogOn");
+});
+
+test("installer registers the exact task descriptor after configuration check", () => {
+  const installerPath = path.join(root, "scripts", "install-codex-status-watchdog.ps1");
+  const escapedInstallerPath = installerPath.replace(/'/g, "''");
+  const output = runInstallerHarness(`
+$global:events = @()
+function global:Start-Process {
+  param([string]$FilePath, [string[]]$ArgumentList, [switch]$Wait, [switch]$PassThru, [string]$WindowStyle)
+  $global:events += 'check'
+  $global:check = [ordered]@{ FilePath = $FilePath; Arguments = @($ArgumentList); Wait = [bool]$Wait; PassThru = [bool]$PassThru }
+  [pscustomobject]@{ ExitCode = 0 }
+}
+function global:New-ScheduledTaskAction {
+  param([string]$Execute, [string]$Argument)
+  $global:events += 'action'
+  [pscustomobject]@{ Execute = $Execute; Argument = $Argument }
+}
+function global:New-ScheduledTaskTrigger {
+  param([switch]$AtLogOn, [string]$User)
+  $global:events += 'trigger'
+  [pscustomobject]@{ AtLogOn = [bool]$AtLogOn; User = $User }
+}
+function global:New-ScheduledTaskSettingsSet {
+  param(
+    [switch]$AllowStartIfOnBatteries,
+    [switch]$DontStopIfGoingOnBatteries,
+    [TimeSpan]$RestartInterval,
+    [int]$RestartCount,
+    [TimeSpan]$ExecutionTimeLimit
+  )
+  $global:events += 'settings'
+  [pscustomobject]@{
+    AllowStartIfOnBatteries = [bool]$AllowStartIfOnBatteries
+    DontStopIfGoingOnBatteries = [bool]$DontStopIfGoingOnBatteries
+    RestartIntervalMinutes = $RestartInterval.TotalMinutes
+    RestartCount = $RestartCount
+    ExecutionTimeLimitSeconds = $ExecutionTimeLimit.TotalSeconds
+  }
+}
+function global:New-ScheduledTaskPrincipal {
+  param([string]$UserId, [string]$LogonType, [string]$RunLevel)
+  $global:events += 'principal'
+  [pscustomobject]@{ UserId = $UserId; LogonType = $LogonType; RunLevel = $RunLevel }
+}
+function global:Register-ScheduledTask {
+  param([string]$TaskName, $Action, $Trigger, $Settings, $Principal, [switch]$Force)
+  $global:events += 'register'
+  $global:registration = [ordered]@{
+    TaskName = $TaskName
+    Force = [bool]$Force
+    Execute = $Action.Execute
+    Argument = $Action.Argument
+    Trigger = $Trigger
+    Settings = $Settings
+    Principal = $Principal
+  }
+}
+function global:Start-ScheduledTask {
+  param([string]$TaskName)
+  $global:events += 'start'
+  $global:startTaskName = $TaskName
+}
+. '${escapedInstallerPath}' -StartNow
+[ordered]@{ Events = $global:events; Check = $global:check; Registration = $global:registration; StartTaskName = $global:startTaskName } | ConvertTo-Json -Compress -Depth 8
+`);
+  const result = JSON.parse(output);
+  assert.deepEqual(result.Events, ["check", "action", "trigger", "settings", "principal", "register", "start"]);
+  assert.equal(result.Check.Arguments[result.Check.Arguments.length - 1], "-CheckConfiguration");
+  assert.equal(result.Check.Wait, true);
+  assert.equal(result.Check.PassThru, true);
+  assert.equal(result.Registration.TaskName, "CodexStatusLightWatchdog");
+  assert.equal(result.Registration.Force, true);
+  assert.match(result.Registration.Execute.toLowerCase(), /powershell\.exe$/);
+  assert.equal(result.Registration.Argument, `-NoProfile -ExecutionPolicy Bypass -File "${path.join(root, "scripts", "codex-status-watchdog.ps1")}"`);
+  assert.equal(result.Registration.Trigger.AtLogOn, true);
+  assert.equal(result.Registration.Trigger.User, process.env.USERNAME);
+  assert.equal(result.Registration.Settings.AllowStartIfOnBatteries, true);
+  assert.equal(result.Registration.Settings.DontStopIfGoingOnBatteries, true);
+  assert.equal(result.Registration.Settings.RestartIntervalMinutes, 1);
+  assert.equal(result.Registration.Settings.RestartCount, 999);
+  assert.equal(result.Registration.Settings.ExecutionTimeLimitSeconds, 0);
+  assert.equal(result.Registration.Principal.LogonType, "Interactive");
+  assert.equal(result.Registration.Principal.RunLevel, "Limited");
+  assert.match(result.Registration.Principal.UserId, new RegExp(`${process.env.USERNAME}$`, "i"));
+  assert.equal(result.StartTaskName, "CodexStatusLightWatchdog");
+});
+
+test("installer uses Force for repeated registrations without creating another task name", () => {
+  const installerPath = path.join(root, "scripts", "install-codex-status-watchdog.ps1");
+  const escapedInstallerPath = installerPath.replace(/'/g, "''");
+  const output = runInstallerHarness(`
+$global:registrations = @()
+function global:Start-Process { param([string]$FilePath, [string[]]$ArgumentList, [switch]$Wait, [switch]$PassThru, [string]$WindowStyle) [pscustomobject]@{ ExitCode = 0 } }
+function global:New-ScheduledTaskAction { param([string]$Execute, [string]$Argument) [pscustomobject]@{ Execute = $Execute; Argument = $Argument } }
+function global:New-ScheduledTaskTrigger { param([switch]$AtLogOn, [string]$User) [pscustomobject]@{ AtLogOn = [bool]$AtLogOn; User = $User } }
+function global:New-ScheduledTaskSettingsSet { param([switch]$AllowStartIfOnBatteries, [switch]$DontStopIfGoingOnBatteries, [TimeSpan]$RestartInterval, [int]$RestartCount, [TimeSpan]$ExecutionTimeLimit) [pscustomobject]@{} }
+function global:New-ScheduledTaskPrincipal { param([string]$UserId, [string]$LogonType, [string]$RunLevel) [pscustomobject]@{} }
+function global:Register-ScheduledTask { param([string]$TaskName, $Action, $Trigger, $Settings, $Principal, [switch]$Force) $global:registrations += [pscustomobject]@{ TaskName = $TaskName; Force = [bool]$Force } }
+. '${escapedInstallerPath}'
+. '${escapedInstallerPath}'
+$global:registrations | ConvertTo-Json -Compress
+`);
+  const registrations = JSON.parse(output);
+  assert.deepEqual(registrations, [
+    { TaskName: "CodexStatusLightWatchdog", Force: true },
+    { TaskName: "CodexStatusLightWatchdog", Force: true },
+  ]);
+});
+
+test("installer stops before registration when configuration check fails", () => {
+  const installerPath = path.join(root, "scripts", "install-codex-status-watchdog.ps1");
+  const escapedInstallerPath = installerPath.replace(/'/g, "''");
+  const output = runInstallerHarness(`
+$global:events = @()
+function global:Start-Process { $global:events += 'check'; [pscustomobject]@{ ExitCode = 17 } }
+function global:New-ScheduledTaskAction { throw 'registration was attempted after failed configuration' }
+try { . '${escapedInstallerPath}' } catch { $global:errorMessage = $_.Exception.Message }
+[ordered]@{ Events = $global:events; Error = $global:errorMessage } | ConvertTo-Json -Compress
+`);
+  const result = JSON.parse(output);
+  assert.deepEqual(result.Events, ["check"]);
+  assert.match(result.Error, /configuration check failed with exit code 17/);
+});
+
+test("installer uninstalls only an existing exact task name", () => {
+  const installerPath = path.join(root, "scripts", "install-codex-status-watchdog.ps1");
+  const escapedInstallerPath = installerPath.replace(/'/g, "''");
+  const output = runInstallerHarness(`
+$global:getNames = @()
+$global:unregisterNames = @()
+function global:Get-ScheduledTask {
+  param([string]$TaskName)
+  $global:getNames += $TaskName
+  if ($global:getNames.Count -eq 1) {
+    return @([pscustomobject]@{ TaskName = 'OtherTask' }, [pscustomobject]@{ TaskName = 'CodexStatusLightWatchdog' })
+  }
+  return @([pscustomobject]@{ TaskName = 'CodexStatusLightWatchdogBackup' })
+}
+function global:Unregister-ScheduledTask { param([string]$TaskName, [switch]$Confirm) $global:unregisterNames += $TaskName }
+. '${escapedInstallerPath}' -Uninstall
+. '${escapedInstallerPath}' -Uninstall
+[ordered]@{ GetNames = $global:getNames; UnregisterNames = $global:unregisterNames } | ConvertTo-Json -Compress
+`);
+  const result = JSON.parse(output);
+  assert.deepEqual(result.GetNames, ["CodexStatusLightWatchdog", "CodexStatusLightWatchdog"]);
+  assert.deepEqual(result.UnregisterNames, ["CodexStatusLightWatchdog"]);
 });
 
 test("failed tunnel rotation retains ownership and the third public failure state", () => {
