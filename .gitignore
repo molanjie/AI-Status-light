@@ -8,3 +8,4 @@ desktop/__pycache__/
 .venv/
 dist/
 build/
+.worktrees/
