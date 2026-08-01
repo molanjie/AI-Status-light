@@ -106,22 +106,60 @@ function getTokenStats(databasePath) {
   }
 }
 
+function normalizePlanInfo(auth, payload, fallbackRefreshedAt = null) {
+  const ai = payload["https://api.openai.com/auth"];
+  if (!ai) return null;
+
+  const plan = ai.chatgpt_plan_type || "unknown";
+  const activeUntil = ai.chatgpt_subscription_active_until || null;
+  const refreshedAt = auth.last_refresh || fallbackRefreshedAt || null;
+  const activeUntilMs = activeUntil ? Date.parse(activeUntil) : NaN;
+  const refreshedAtMs = refreshedAt ? Date.parse(refreshedAt) : NaN;
+  const renewalPending = plan === "plus" && Number.isFinite(activeUntilMs) &&
+    Number.isFinite(refreshedAtMs) && activeUntilMs < refreshedAtMs;
+
+  return {
+    plan,
+    activeSince: ai.chatgpt_subscription_active_start || null,
+    activeUntil: renewalPending ? null : activeUntil,
+    subscriptionStatus: renewalPending ? "renewal_pending" : activeUntil ? "active" : "unknown",
+    refreshedAt,
+    email: payload.email || null,
+    name: payload.name || null,
+  };
+}
+
+function applySubscriptionRenewalDate(planInfo, renewalDate) {
+  if (!planInfo || planInfo.plan !== "plus") return planInfo;
+
+  const normalizedDate = String(renewalDate || "").trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(normalizedDate)) return planInfo;
+
+  const parsedAt = Date.parse(normalizedDate + "T00:00:00Z");
+  if (!Number.isFinite(parsedAt) || new Date(parsedAt).toISOString().slice(0, 10) !== normalizedDate) {
+    return planInfo;
+  }
+
+  return {
+    ...planInfo,
+    activeUntil: null,
+    renewalDate: normalizedDate,
+    renewalDateOnly: true,
+    subscriptionStatus: "active",
+    subscriptionSource: "billing",
+  };
+}
+
 function getPlanInfo() {
   try {
     const authPath = path.join(CODEX_HOME, "auth.json");
+    const authStat = fs.statSync(authPath);
     const auth = JSON.parse(fs.readFileSync(authPath, "utf8"));
     const idToken = auth.tokens && auth.tokens.id_token;
     if (!idToken) return null;
     const payload = JSON.parse(Buffer.from(idToken.split(".")[1], "base64url").toString());
-    const ai = payload["https://api.openai.com/auth"];
-    if (!ai) return null;
-    return {
-      plan: ai.chatgpt_plan_type || "unknown",
-      activeSince: ai.chatgpt_subscription_active_start || null,
-      activeUntil: ai.chatgpt_subscription_active_until || null,
-      email: payload.email || null,
-      name: payload.name || null,
-    };
+    const planInfo = normalizePlanInfo(auth, payload, authStat.mtime.toISOString());
+    return applySubscriptionRenewalDate(planInfo, process.env.SUBSCRIPTION_RENEWAL_DATE);
   } catch {
     return null;
   }
@@ -396,4 +434,10 @@ function readCodexStatus() {
   }
 }
 
-module.exports = { buildCodexStatus, findLatestStateDatabase, readCodexStatus };
+module.exports = {
+  applySubscriptionRenewalDate,
+  buildCodexStatus,
+  findLatestStateDatabase,
+  normalizePlanInfo,
+  readCodexStatus,
+};

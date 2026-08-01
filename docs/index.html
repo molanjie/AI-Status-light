@@ -1,4 +1,4 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <!-- encoding: utf-8 -->
 <html lang="zh-CN">
 <head>
@@ -1026,6 +1026,7 @@
   </div>
 </div>
 
+<script src="./status-connection.js"></script>
 <script>
 var el = document.getElementById.bind(document);
 var currentSessions = [];
@@ -1033,18 +1034,32 @@ var sessionSignature = "";
 var carouselIndex = 0;
 var carouselTimer = null;
 var lastGoodStatus = null;
+var currentDisplayedState = "syncing";
 var lastSyncAt = null;
 var pageLoadTime = Date.now();
+var connectionApi = window.CodexStatusConnection;
+var ENDPOINT_REGISTRY_URL =
+  "https://raw.githubusercontent.com/molanjie/AI-Status-light/live-status/endpoint.json";
+var STATUS_API_STORAGE_KEY = "codex_status_api_base";
+var STATUS_REFRESH_MS = 1000;
+var REGISTRY_REFRESH_MS = 30000;
+var REGISTRY_REQUEST_TIMEOUT_MS = 2500;
+var registryApiBase = "";
+var registryRequestInFlight = false;
+var statusRequestInFlight = false;
+var failureTracker = connectionApi.createFailureTracker(3);
 var stateLabels = {
   idle: "空闲",
   processing: "处理中",
   waiting: "等待输入",
   completed: "已完成",
   syncing: "正在同步",
-  disconnected: "连接中断",
+  disconnected: "采集端离线",
   offline: "离线",
   error: "异常"
 };
+
+
 
 function renderSessionTitle() {
   if (!currentSessions.length) {
@@ -1078,6 +1093,7 @@ function updateSessions(sessions) {
 function renderStatus(data) {
   var light = data.light || "yellow";
   var state = data.state || "error";
+  currentDisplayedState = state;
   el("island").className = "island " + state;
   if (window.__setParticleState) window.__setParticleState(state);
   el("session-count").textContent = (data.sessionCount || 0) + " 对话";
@@ -1097,6 +1113,7 @@ function renderStatus(data) {
   if (data.hostname) el("footer-host").textContent = data.hostname;
   if (typeof updateStats === "function") updateStats(data);
   if (typeof renderUsage === "function") renderUsage(data);
+  if (typeof tcRender === "function") tcRender();
 }
 
 function renderConnectionState(state, label, detail, triedUrls) {
@@ -1111,7 +1128,7 @@ function renderConnectionState(state, label, detail, triedUrls) {
     lastCompletedAt: lastGoodStatus ? lastGoodStatus.lastCompletedAt : null,
     tokenStats: lastGoodStatus ? lastGoodStatus.tokenStats : null,
     plan: lastGoodStatus ? lastGoodStatus.plan : null,
-    updatedAt: Date.now(),
+    updatedAt: lastGoodStatus ? lastGoodStatus.updatedAt : null,
     error: ""
   });
   el("thread-title").textContent = detail;
@@ -1120,40 +1137,39 @@ function renderConnectionState(state, label, detail, triedUrls) {
   el("error").className = "error" + (el("error").textContent ? " visible" : "");
 }
 
-var DEFAULT_STATUS_API_BASE = "https://lid-soap-profession-farmer.trycloudflare.com";
-var STATUS_API_STORAGE_KEY = "codex_status_api_base";
-var STATUS_REFRESH_MS = 1000;
-
-function normalizeApiBase(value) {
-  return (value || "").replace(/\/+$/, "");
-}
-
-function addStatusApiCandidate(list, value) {
-  var base = normalizeApiBase(value);
-  if (base && list.indexOf(base) === -1) list.push(base);
+function restoreLastGoodSnapshot() {
+  var snapshot = null;
+  try {
+    snapshot = connectionApi.loadSnapshot(window.localStorage);
+  } catch (error) {}
+  if (!snapshot) return;
+  lastGoodStatus = snapshot.data;
+  lastSyncAt = snapshot.savedAt;
+  renderStatus(lastGoodStatus);
+  el("status-time").textContent = "上次同步 " + formatSyncTime(lastSyncAt);
 }
 
 function getStatusApiBases() {
-  var list = [];
   var params = new URLSearchParams(window.location.search);
-  addStatusApiCandidate(list, params.get("api"));
-  addStatusApiCandidate(list, window.CODEX_STATUS_API_BASE);
-  addStatusApiCandidate(list, DEFAULT_STATUS_API_BASE);
+  var storedBase = "";
   try {
-    addStatusApiCandidate(list, localStorage.getItem(STATUS_API_STORAGE_KEY));
-  } catch (err) {}
-  if (window.location.protocol === "file:") addStatusApiCandidate(list, "http://127.0.0.1:3456");
-  if (!list.length) list.push("");
-  return list;
+    storedBase = localStorage.getItem(STATUS_API_STORAGE_KEY);
+  } catch (error) {}
+  return connectionApi.buildApiCandidates({
+    explicitBase: params.get("api"),
+    registryBase: registryApiBase,
+    storedBase: storedBase,
+    isFile: window.location.protocol === "file:",
+  });
 }
 
 function getStatusApiUrl(base) {
-  return normalizeApiBase(base) + "/api/status";
+  return connectionApi.normalizeApiBase(base) + "/api/status";
 }
 
 function rememberStatusApiBase(base) {
   if (!base) return;
-  try { localStorage.setItem(STATUS_API_STORAGE_KEY, normalizeApiBase(base)); } catch (err) {}
+  try { localStorage.setItem(STATUS_API_STORAGE_KEY, connectionApi.normalizeApiBase(base)); } catch (err) {}
 }
 
 function formatTriedStatusApis(urls) {
@@ -1177,35 +1193,69 @@ function formatSyncTime(ts) {
   return new Date(ts).toLocaleTimeString();
 }
 
-async function fetchStatus() {
-  var bases = getStatusApiBases();
-  var triedUrls = [];
-  for (var i = 0; i < bases.length; i += 1) {
-    var base = bases[i];
-    var apiUrl = getStatusApiUrl(base);
-    triedUrls.push(apiUrl);
-    try {
-      var response = await fetchStatusFromApi(apiUrl);
-      if (!response.ok) throw new Error("HTTP " + response.status);
-      var data = await response.json();
-      rememberStatusApiBase(base);
-      lastGoodStatus = data;
-      lastSyncAt = Date.now();
-      renderStatus(data);
-      el("status-time").textContent = "已同步 " + formatSyncTime(lastSyncAt);
-      return;
-    } catch (err) {}
+async function refreshEndpointRegistry() {
+  if (registryRequestInFlight) return;
+  registryRequestInFlight = true;
+  var controller = new AbortController();
+  var timeoutId = setTimeout(function () {
+    controller.abort();
+  }, REGISTRY_REQUEST_TIMEOUT_MS);
+  try {
+    var response = await fetch(
+      ENDPOINT_REGISTRY_URL + "?t=" + Date.now(),
+      { cache: "no-store", signal: controller.signal }
+    );
+    if (!response.ok) throw new Error("HTTP " + response.status);
+    var parsed = connectionApi.parseRegistry(await response.json());
+    if (!parsed) throw new Error("Invalid endpoint registry");
+    var changed = parsed.apiBase !== registryApiBase;
+    registryApiBase = parsed.apiBase;
+    if (changed) fetchStatus();
+  } catch (error) {
+  } finally {
+    clearTimeout(timeoutId);
+    registryRequestInFlight = false;
   }
-
-  if (lastGoodStatus) {
-    renderConnectionState("disconnected", "连接中断", "正在显示上次有效状态", triedUrls);
-    return;
-  }
-  renderConnectionState("disconnected", "连接中断", "请确认本机服务或公网隧道正在运行", triedUrls);
 }
 
-fetchStatus();
-setInterval(fetchStatus, STATUS_REFRESH_MS);
+async function fetchStatus() {
+  if (statusRequestInFlight) return;
+  statusRequestInFlight = true;
+  var triedUrls = [];
+  try {
+    var bases = getStatusApiBases();
+    for (var i = 0; i < bases.length; i += 1) {
+      var base = bases[i];
+      var apiUrl = getStatusApiUrl(base);
+      triedUrls.push(apiUrl);
+      try {
+        var response = await fetchStatusFromApi(apiUrl);
+        if (!response.ok) throw new Error("HTTP " + response.status);
+        var data = await response.json();
+        rememberStatusApiBase(base);
+        lastGoodStatus = data;
+        lastSyncAt = Date.now();
+        try {
+          connectionApi.saveSnapshot(window.localStorage, data, lastSyncAt);
+        } catch (storageError) {}
+        failureTracker.recordSuccess();
+        renderStatus(data);
+        el("status-time").textContent = "已同步 " + formatSyncTime(lastSyncAt);
+        return;
+      } catch (error) {}
+    }
+
+    if (!failureTracker.recordFailure()) return;
+    renderConnectionState(
+      "disconnected",
+      "采集端离线",
+      lastGoodStatus ? "正在显示上次有效状态" : "等待本机恢复连接",
+      triedUrls
+    );
+  } finally {
+    statusRequestInFlight = false;
+  }
+}
 
 // Uptime tracking
 function updateUptime() {
@@ -1372,6 +1422,22 @@ function renderPlanCountdown() {
     return;
   }
   var name = plan.name || plan.email || "";
+  if (plan.renewalDateOnly && plan.renewalDate) {
+    var renewalAt = new Date(plan.renewalDate + "T00:00:00").getTime();
+    var remainingDays = Number.isFinite(renewalAt)
+      ? Math.max(0, Math.floor((renewalAt - Date.now()) / 86400000))
+      : null;
+    var renewalLabel = "下次续订日 " + plan.renewalDate;
+    if (remainingDays !== null) renewalLabel += " · 距续订日约 " + remainingDays + " 天";
+    info.innerHTML = "<span>" + name + "</span><span>" + renewalLabel + "</span>";
+    return;
+  }
+  if (plan.subscriptionStatus === "renewal_pending") {
+    var refreshedAt = plan.refreshedAt ? new Date(plan.refreshedAt).toLocaleString() : "";
+    var pendingLabel = "续订时间待同步" + (refreshedAt ? "（上次核对 " + refreshedAt + "）" : "");
+    info.innerHTML = "<span>" + name + "</span><span>" + pendingLabel + "</span>";
+    return;
+  }
   if (!plan.activeUntil) {
     info.innerHTML = "<span>" + name + "</span><span>订阅时间未知</span>";
     return;
@@ -1605,7 +1671,7 @@ var tcStateLabels = {
   processing: "正在处理",
   waiting:    "等待输入",
   syncing:    "正在同步",
-  disconnected: "连接中断",
+  disconnected: "采集端离线",
   offline:    "离线",
   error:      "异常"
 };
@@ -1618,7 +1684,7 @@ function tcToggle(e) {
 
 function tcRender() {
   var capsule = el("traffic-capsule");
-  var state = (lastGoodStatus && lastGoodStatus.state) || "offline";
+  var state = currentDisplayedState || "offline";
   var color = tcStateColors[state] || "#8e8e93";
   var label = tcStateLabels[state] || state;
   var sessions = (lastGoodStatus && lastGoodStatus.sessions) || [];
@@ -1704,7 +1770,7 @@ function tcRender() {
     dot.style.backgroundColor = color;
     dot.className = "tc-dot" + (isProcessing ? " breathing" : "");
     var displayLabel = isIdle && !hasSessions ? "Codex" : label;
-    if (hasSessions) displayLabel += " · " + count + " 对话";
+    if (hasSessions && !isDisconnected) displayLabel += " · " + count + " 对话";
     el("tc-label").textContent = displayLabel;
     el("tc-count").textContent = "";
     el("tc-progress").style.display = isProcessing ? "" : "none";
@@ -1727,7 +1793,12 @@ function periodicTimelineRefresh() {
   tcRender();
 }
 setInterval(periodicTimelineRefresh, 1000);
+
+restoreLastGoodSnapshot();
+refreshEndpointRegistry();
+fetchStatus();
+setInterval(fetchStatus, STATUS_REFRESH_MS);
+setInterval(refreshEndpointRegistry, REGISTRY_REFRESH_MS);
 </script>
 </body>
 </html>
-
