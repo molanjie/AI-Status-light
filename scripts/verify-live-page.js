@@ -2,114 +2,127 @@ const assert = require("node:assert/strict");
 const { chromium } = require("playwright");
 
 const DEFAULT_PAGE_URL = "https://molanjie.github.io/AI-Status-light/";
-const DEFAULT_REGISTRY_URL =
-  "https://raw.githubusercontent.com/molanjie/AI-Status-light/live-status/endpoint.json";
-const STATUS_API_STORAGE_KEY = "codex_status_api_base";
+const FAILURE_PROBE_KEY = "__codexStatusFailureProbe";
 const SNAPSHOT_KEY = "codex_status_last_good_v1";
 const widths = [320, 390, 1280];
 
-function normalizeApiBase(value) {
-  return String(value || "").trim().replace(/\/+$/, "");
-}
-
-function buildDeterministicOutagePlan(pageUrl, selectedApiBase, registryUrl = DEFAULT_REGISTRY_URL) {
-  const apiBase = normalizeApiBase(selectedApiBase);
-  assert.ok(apiBase, "a remembered API base is required for the outage phase");
-  const selectedApi = new URL(apiBase);
-  assert.equal(selectedApi.protocol, "https:", "the outage base must use HTTPS");
-  assert.ok(
-    selectedApi.hostname.endsWith(".trycloudflare.com"),
-    "the outage base must be a Quick Tunnel endpoint"
-  );
-  const outageUrl = new URL(pageUrl);
-  outageUrl.searchParams.set("api", apiBase);
-  return {
-    pageUrl: outageUrl.href,
-    registryUrl,
-    candidateStorageKey: STATUS_API_STORAGE_KEY,
-    candidateBases: [apiBase],
-    apiUrl: `${apiBase}/api/status`,
-    registryPayload: {
-      schemaVersion: 1,
-      apiBase,
-      publishedAt: new Date().toISOString(),
-    },
+function installFailureCycleProbe(probeKey = FAILURE_PROBE_KEY) {
+  const root = window;
+  const probe = {
+    failureCount: 0,
+    successCount: 0,
+    failureEvents: [],
   };
+  const wrappedApis = new WeakSet();
+  root[probeKey] = probe;
+
+  function wrapTracker(tracker) {
+    if (!tracker || typeof tracker.recordFailure !== "function") return tracker;
+    const originalRecordFailure = tracker.recordFailure;
+    if (originalRecordFailure.__codexStatusProbeWrapped) return tracker;
+    const wrappedRecordFailure = function (...args) {
+      let result;
+      try {
+        result = Reflect.apply(originalRecordFailure, this, args);
+        return result;
+      } finally {
+        probe.failureCount += 1;
+        probe.failureEvents.push({
+          count: probe.failureCount,
+          result,
+        });
+      }
+    };
+    try {
+      Object.defineProperty(wrappedRecordFailure, "__codexStatusProbeWrapped", {
+        value: true,
+      });
+      tracker.recordFailure = wrappedRecordFailure;
+    } catch (error) {
+      return tracker;
+    }
+    return tracker;
+  }
+
+  function wrapApi(api) {
+    if (!api || typeof api.createFailureTracker !== "function") return api;
+    if (wrappedApis.has(api)) return api;
+    const originalCreateFailureTracker = api.createFailureTracker;
+    const wrappedCreateFailureTracker = function (...args) {
+      return wrapTracker(
+        Reflect.apply(originalCreateFailureTracker, this, args)
+      );
+    };
+    try {
+      api.createFailureTracker = wrappedCreateFailureTracker;
+      wrappedApis.add(api);
+      return api;
+    } catch (error) {
+      const proxy = new Proxy(api, {
+        get(target, property, receiver) {
+          if (property === "createFailureTracker") {
+            return wrappedCreateFailureTracker;
+          }
+          return Reflect.get(target, property, receiver);
+        },
+      });
+      wrappedApis.add(api);
+      return proxy;
+    }
+  }
+
+  const previousDescriptor = Object.getOwnPropertyDescriptor(
+    root,
+    "CodexStatusConnection"
+  );
+  if (previousDescriptor?.configurable === false) {
+    if ("value" in previousDescriptor && previousDescriptor.writable) {
+      root.CodexStatusConnection = wrapApi(previousDescriptor.value);
+    }
+    return probe;
+  }
+
+  let currentValue;
+  try {
+    currentValue = root.CodexStatusConnection;
+  } catch (error) {}
+  try {
+    Object.defineProperty(root, "CodexStatusConnection", {
+      configurable: true,
+      enumerable: previousDescriptor?.enumerable ?? true,
+      get() {
+        return currentValue;
+      },
+      set(value) {
+        currentValue = wrapApi(value);
+      },
+    });
+    if (currentValue !== undefined) currentValue = wrapApi(currentValue);
+  } catch (error) {
+    if (currentValue !== undefined) wrapApi(currentValue);
+  }
+  return probe;
 }
 
-function createOutageRouteHandler(plan, options = {}) {
-  const selectedApi = new URL(plan.apiUrl);
-  const registry = new URL(plan.registryUrl);
-  let firstApiRequestStarted = false;
-  let releaseFirstApiRequest;
-  const firstApiRequestReleased = new Promise((resolve) => {
-    releaseFirstApiRequest = resolve;
-  });
-  let resolveFirstApiRequestStarted;
-  const firstApiRequestStartedPromise = new Promise((resolve) => {
-    resolveFirstApiRequestStarted = resolve;
-  });
-  const routeOutageTraffic = async function routeOutageTraffic(route) {
-    const requestUrl = new URL(route.request().url());
-    if (
-      requestUrl.origin === registry.origin &&
-      requestUrl.pathname === registry.pathname
-    ) {
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify(plan.registryPayload),
-      });
-      return;
-    }
-    if (
-      selectedApi.protocol === "https:" &&
-      selectedApi.hostname.endsWith(".trycloudflare.com") &&
-      requestUrl.origin === selectedApi.origin &&
-      requestUrl.pathname === selectedApi.pathname
-    ) {
-      if (options.holdFirstApiRequest && !firstApiRequestStarted) {
-        firstApiRequestStarted = true;
-        resolveFirstApiRequestStarted();
-        await firstApiRequestReleased;
-      }
+function createTunnelBlockRouteHandler() {
+  return async function blockTunnelTraffic(route) {
+    const hostname = new URL(route.request().url()).hostname;
+    if (hostname.endsWith(".trycloudflare.com")) {
       await route.abort();
       return;
     }
     await route.continue();
   };
-  routeOutageTraffic.waitForFirstApiRequest = () => firstApiRequestStartedPromise;
-  routeOutageTraffic.releaseFirstApiRequest = () => releaseFirstApiRequest();
-  return routeOutageTraffic;
 }
 
-function createFailureCycleObserver(page, options = {}) {
-  let completedCycles = 0;
-  let currentCycleInFlight = Boolean(options.initiallyInFlight);
-  async function waitForState(expected, timeout) {
-    await page.waitForFunction(
-      ({ expectedState }) => window.statusRequestInFlight === expectedState,
-      { expectedState: expected },
-      { timeout }
-    );
-  }
-  return {
-    async waitForCompleteCycle(timeout = 10000) {
-      if (currentCycleInFlight) {
-        await waitForState(false, timeout);
-        currentCycleInFlight = false;
-      } else {
-        await waitForState(false, timeout);
-        await waitForState(true, timeout);
-        await waitForState(false, timeout);
-      }
-      completedCycles += 1;
-      return completedCycles;
+async function waitForFailureEvent(page, expected, timeout = 30000) {
+  await page.waitForFunction(
+    ({ expectedCount, probeKey }) => {
+      return (window[probeKey]?.failureCount || 0) >= expectedCount;
     },
-    count() {
-      return completedCycles;
-    },
-  };
+    { expectedCount: expected, probeKey: FAILURE_PROBE_KEY },
+    { timeout }
+  );
 }
 
 async function waitForText(page, selector, pattern, timeout = 90000) {
@@ -154,14 +167,6 @@ async function assertResponsive(page) {
   }
 }
 
-async function triggerAndObserveFailureCycle(page, observer) {
-  const cycle = observer.waitForCompleteCycle();
-  await page.evaluate(() => {
-    void fetchStatus();
-  });
-  return cycle;
-}
-
 async function main() {
   const pageUrl = process.argv[2] || DEFAULT_PAGE_URL;
   let browser;
@@ -185,40 +190,27 @@ async function main() {
       "saved snapshot does not match the initial session count"
     );
 
-    const rememberedBase = await page.evaluate((storageKey) => {
-      return localStorage.getItem(storageKey);
-    }, STATUS_API_STORAGE_KEY);
-    const outagePlan = buildDeterministicOutagePlan(pageUrl, rememberedBase);
-    const routeOutageTraffic = createOutageRouteHandler(outagePlan, {
-      holdFirstApiRequest: true,
+    await page.addInitScript({
+      content: `(${installFailureCycleProbe.toString()})(${JSON.stringify(
+        FAILURE_PROBE_KEY
+      )});`,
     });
-    await page.evaluate((storageKey) => {
-      localStorage.removeItem(storageKey);
-    }, outagePlan.candidateStorageKey);
+    const blockTunnelTraffic = createTunnelBlockRouteHandler();
+    await page.route("**/*", blockTunnelTraffic);
 
-    await page.route("**/*", routeOutageTraffic);
-    stage = "three complete public API failure cycles";
-    await page.goto(outagePlan.pageUrl, { waitUntil: "domcontentloaded" });
-    await Promise.race([
-      routeOutageTraffic.waitForFirstApiRequest(),
-      new Promise((_, reject) =>
-        setTimeout(() => reject(new Error("initial API request did not start")), 30000)
-      ),
-    ]);
-    const observer = createFailureCycleObserver(page, { initiallyInFlight: true });
-    routeOutageTraffic.releaseFirstApiRequest();
-
-    assert.equal(await observer.waitForCompleteCycle(), 1);
+    stage = "authoritative complete failure cycles";
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await waitForFailureEvent(page, 1);
     assert.doesNotMatch(
       await page.locator("#status-label").textContent(),
       /^采集端离线$/
     );
-    assert.equal(await triggerAndObserveFailureCycle(page, observer), 2);
+    await waitForFailureEvent(page, 2);
     assert.doesNotMatch(
       await page.locator("#status-label").textContent(),
       /^采集端离线$/
     );
-    assert.equal(await triggerAndObserveFailureCycle(page, observer), 3);
+    await waitForFailureEvent(page, 3);
     await waitForText(page, "#status-label", /^采集端离线$/, 30000);
     await waitForText(page, "#status-time", /^上次同步\s/, 30000);
 
@@ -238,38 +230,21 @@ async function main() {
     await assertResponsive(page);
 
     stage = "automatic recovery without reload";
-    await page.unroute("**/*", routeOutageTraffic);
-    await page.waitForFunction(
-      () => window.statusRequestInFlight === false,
-      undefined,
-      { timeout: 30000 }
-    );
-    await triggerAndObserveFailureCycle(page, {
-      waitForCompleteCycle: async () => {
-        await page.waitForFunction(
-          () => window.statusRequestInFlight === true,
-          undefined,
-          { timeout: 10000 }
-        );
-        await page.waitForFunction(
-          () => window.statusRequestInFlight === false,
-          undefined,
-          { timeout: 10000 }
-        );
-        return true;
-      },
-    });
+    await page.unroute("**/*", blockTunnelTraffic);
     await waitForText(page, "#status-time", /^已同步\s/, 30000);
     assert.doesNotMatch(
       await page.locator("#status-label").textContent(),
       /^采集端离线$/
     );
 
+    const probe = await page.evaluate((probeKey) => {
+      return window[probeKey];
+    }, FAILURE_PROBE_KEY);
     process.stdout.write(
       JSON.stringify({
         pageUrl,
         initialLiveSync: true,
-        completeFailureCycles: observer.count(),
+        authoritativeFailureEvents: probe.failureCount,
         offlineSnapshotPreserved: true,
         sessionCount: initial.sessionCount,
         recoveredWithoutReload: true,
@@ -281,6 +256,11 @@ async function main() {
       pageUrl,
       stage,
       currentUrl: page?.url() || null,
+      failureCount: page
+        ? await page
+            .evaluate((probeKey) => window[probeKey]?.failureCount || 0, FAILURE_PROBE_KEY)
+            .catch(() => null)
+        : null,
       statusLabel: page
         ? await page.locator("#status-label").textContent().catch(() => null)
         : null,
@@ -298,12 +278,11 @@ async function main() {
 
 module.exports = {
   DEFAULT_PAGE_URL,
-  DEFAULT_REGISTRY_URL,
-  STATUS_API_STORAGE_KEY,
+  FAILURE_PROBE_KEY,
   SNAPSHOT_KEY,
-  buildDeterministicOutagePlan,
-  createFailureCycleObserver,
-  createOutageRouteHandler,
+  createTunnelBlockRouteHandler,
+  installFailureCycleProbe,
+  waitForFailureEvent,
   waitForText,
 };
 

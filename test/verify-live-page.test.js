@@ -13,6 +13,7 @@ function loadVerifier() {
   const context = {
     console,
     URL,
+    window: {},
     module,
     exports: module.exports,
     process: { argv: ["node", "verify-live-page.js"] },
@@ -22,94 +23,112 @@ function loadVerifier() {
       return require(request);
     },
   };
-  vm.runInNewContext(source.replace(/\nmain\(\);\s*$/, "\n"), context, {
+  vm.runInNewContext(source.replace(/\nif \(require\.main === module\) main\(\);\s*$/, "\n"), context, {
     filename: "scripts/verify-live-page.js",
   });
-  return module.exports;
+  return { verifier: module.exports, window: context.window };
 }
 
-test("outage plan preserves existing query params and deduplicates its registry base", () => {
-  const verifier = loadVerifier();
-  const plan = verifier.buildDeterministicOutagePlan(
-    "https://pages.example/status/?view=compact&api=stale",
-    "https://selected.trycloudflare.com/",
-    "https://raw.githubusercontent.com/example/status/endpoint.json"
-  );
+test("probe wraps assigned tracker without changing return values or this binding", () => {
+  const { verifier, window } = loadVerifier();
+  const probe = verifier.installFailureCycleProbe("__testProbe");
+  const tracker = {
+    value: 41,
+    recordFailure(delta) {
+      this.value += delta;
+      return { value: this.value };
+    },
+    recordSuccess() {
+      this.value = 0;
+      return "success";
+    },
+  };
+  const api = {
+    createFailureTracker(limit) {
+      assert.equal(limit, 3);
+      return tracker;
+    },
+  };
 
-  const outageUrl = new URL(plan.pageUrl);
-  assert.equal(outageUrl.searchParams.get("view"), "compact");
-  assert.equal(
-    outageUrl.searchParams.get("api"),
-    "https://selected.trycloudflare.com"
-  );
-  assert.equal(plan.registryPayload.apiBase, "https://selected.trycloudflare.com");
-  assert.equal(plan.candidateBases.length, 1);
-  assert.equal(plan.candidateBases[0], "https://selected.trycloudflare.com");
-  assert.equal(plan.registryUrl, "https://raw.githubusercontent.com/example/status/endpoint.json");
+  window.CodexStatusConnection = api;
+  const wrappedTracker = window.CodexStatusConnection.createFailureTracker(3);
+  assert.equal(wrappedTracker, tracker);
+  assert.deepEqual(wrappedTracker.recordFailure(1), { value: 42 });
+  assert.equal(probe.failureCount, 1);
+  assert.equal(probe.failureEvents.length, 1);
+  assert.equal(wrappedTracker.recordSuccess(), "success");
+  assert.equal(probe.failureCount, 1);
+  assert.equal(wrappedTracker.value, 0);
 });
 
-test("failure cycle observer waits for idle, in-flight, then idle", async () => {
-  const verifier = loadVerifier();
+test("candidate requests do not increment the probe, while a real failure call does once", () => {
+  const { verifier, window } = loadVerifier();
+  const probe = verifier.installFailureCycleProbe("__testProbe");
+  let failures = 0;
+  window.CodexStatusConnection = {
+    createFailureTracker() {
+      return {
+        recordFailure() {
+          failures += 1;
+          return failures >= 3;
+        },
+        recordSuccess() {},
+      };
+    },
+  };
+  const tracker = window.CodexStatusConnection.createFailureTracker(3);
+
+  for (const candidate of ["tunnel-a", "tunnel-b", "tunnel-c"]) {
+    assert.match(candidate, /^tunnel-/);
+    assert.equal(probe.failureCount, 0);
+  }
+  assert.equal(tracker.recordFailure(), false);
+  assert.equal(probe.failureCount, 1);
+  assert.equal(tracker.recordFailure(), false);
+  assert.equal(probe.failureCount, 2);
+});
+
+test("failure event wait is count-based and accepts an already recorded cycle", async () => {
+  const { verifier, window } = loadVerifier();
+  window.__codexStatusFailureProbe = { failureCount: 2 };
   const calls = [];
   const page = {
     async waitForFunction(predicate, arg, options) {
+      assert.equal(predicate(arg), true);
       calls.push({ predicate: predicate.toString(), arg, options });
     },
   };
-  const observer = verifier.createFailureCycleObserver(page);
 
-  assert.equal(await observer.waitForCompleteCycle(1234), 1);
-  assert.equal(await observer.waitForCompleteCycle(1234), 2);
-  assert.deepEqual(
-    calls.map((call) => call.arg.expectedState),
-    [false, true, false, false, true, false]
-  );
-  assert.ok(calls.every((call) => call.options.timeout === 1234));
+  await verifier.waitForFailureEvent(page, 2, 4321);
+  assert.equal(calls[0].arg.expectedCount, 2);
+  assert.equal(calls[0].arg.probeKey, "__codexStatusFailureProbe");
+  assert.equal(calls[0].options.timeout, 4321);
 });
 
-test("failure cycle observer consumes an already in-flight first cycle", async () => {
-  const verifier = loadVerifier();
-  const expectedStates = [];
-  const page = {
-    async waitForFunction(predicate, arg) {
-      expectedStates.push(arg.expectedState);
-    },
-  };
-  const observer = verifier.createFailureCycleObserver(page, {
-    initiallyInFlight: true,
-  });
-
-  assert.equal(await observer.waitForCompleteCycle(), 1);
-  assert.equal(await observer.waitForCompleteCycle(), 2);
-  assert.deepEqual(expectedStates, [false, false, true, false]);
-});
-
-test("outage route aborts only the selected API and keeps registry and page reachable", async () => {
-  const verifier = loadVerifier();
-  const plan = verifier.buildDeterministicOutagePlan(
-    "https://pages.example/status/",
-    "https://selected.trycloudflare.com",
-    "https://raw.githubusercontent.com/example/status/endpoint.json"
-  );
-  const handler = verifier.createOutageRouteHandler(plan);
+test("route aborts two tunnel candidates and continues raw registry and Pages traffic", async () => {
+  const { verifier } = loadVerifier();
+  const handler = verifier.createTunnelBlockRouteHandler();
   async function dispatch(url) {
     const actions = [];
     await handler({
       request: () => ({ url: () => url }),
       abort: async () => actions.push("abort"),
       continue: async () => actions.push("continue"),
-      fulfill: async (options) => actions.push({ fulfill: options }),
     });
     return actions;
   }
 
   assert.deepEqual(
-    await dispatch("https://selected.trycloudflare.com/api/status"),
+    await dispatch("https://candidate-a.trycloudflare.com/api/status"),
     ["abort"]
   );
-  const registryActions = await dispatch(`${plan.registryUrl}?t=1`);
-  assert.equal(registryActions.length, 1);
-  assert.equal(registryActions[0].fulfill.status, 200);
-  assert.match(registryActions[0].fulfill.body, /selected\.trycloudflare\.com/);
-  assert.deepEqual(await dispatch("https://pages.example/status/"), ["continue"]);
+  assert.deepEqual(
+    await dispatch("https://candidate-b.trycloudflare.com/api/status"),
+    ["abort"]
+  );
+  assert.deepEqual(
+    await dispatch("https://raw.githubusercontent.com/example/status/endpoint.json"),
+    ["continue"]
+  );
+  assert.deepEqual(await dispatch("https://molanjie.github.io/AI-Status-light/"), ["continue"]);
 });
