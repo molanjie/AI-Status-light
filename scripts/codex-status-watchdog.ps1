@@ -98,14 +98,17 @@ $watchdogAction = {
       }
       else {
         $externalSucceeded = $false
-        $tunnel = Get-OwnedProcessFromPidFile -PidFile $tunnelPidFile -ExpectedCommandLineFragments $tunnelFragments
-        if ($null -eq $tunnel) {
+        $tunnelClaim = Get-OwnedProcessClaim -PidFile $tunnelPidFile -ExpectedCommandLineFragments $tunnelFragments
+        if ($tunnelClaim.Status -eq 'Missing') {
           if (Test-Path -LiteralPath $tunnelPidFile -PathType Leaf) {
             Remove-Item -LiteralPath $tunnelPidFile -Force
           }
           Clear-OwnedTunnelLogs -StateDirectory $config.stateDirectory
           Start-OwnedProcess -FilePath $config.cloudflaredPath -Arguments @('tunnel', '--url', $config.localTunnelUrl, '--no-autoupdate') -WorkingDirectory $config.projectRoot -PidFile $tunnelPidFile -OutputLog $tunnelOutputLog -ErrorLog $tunnelErrorLog | Out-Null
           Write-WatchdogLog 'started owned tunnel'
+        }
+        elseif ($tunnelClaim.Status -ne 'Owned') {
+          throw "Tunnel ownership is $($tunnelClaim.Status); preserving PID claim. $($tunnelClaim.Error)"
         }
 
         $tunnelUrl = Get-NewestTunnelUrlFromLogFiles -OutputLog $tunnelOutputLog -ErrorLog $tunnelErrorLog

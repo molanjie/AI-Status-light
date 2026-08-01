@@ -245,6 +245,37 @@ test("owned PID lookup queries exactly the recorded PID and validates its comman
   }
 });
 
+test("ownership claims distinguish missing, unverifiable, mismatched, and owned processes", () => {
+  const escaped = modulePath.replace(/'/g, "''");
+  const pidFile = path.join(os.tmpdir(), `codex-status-claim-${process.pid}.pid`);
+  fs.writeFileSync(pidFile, "4242", "ascii");
+  try {
+    const script =
+      `Import-Module '${escaped}' -Force; ` +
+      `$global:mode = 'missing'; ` +
+      `function global:Get-CimInstance { ` +
+      `if ($global:mode -eq 'missing') { return $null }; ` +
+      `if ($global:mode -eq 'throw') { throw 'access denied' }; ` +
+      `if ($global:mode -eq 'hidden') { return [pscustomobject]@{ ProcessId = 4242; CommandLine = $null } }; ` +
+      `if ($global:mode -eq 'mismatch') { return [pscustomobject]@{ ProcessId = 4242; CommandLine = '"node.exe" "C:\\other\\server.js"' } }; ` +
+      `return [pscustomobject]@{ ProcessId = 4242; CommandLine = '"node.exe" "C:\\app\\server.js"' } }; ` +
+      `$global:mode = 'missing'; (Get-OwnedProcessClaim -PidFile '${pidFile.replace(/'/g, "''")}' -ExpectedCommandLineFragments @('node.exe', 'C:\\app\\server.js')).Status; ` +
+      `$global:mode = 'throw'; (Get-OwnedProcessClaim -PidFile '${pidFile.replace(/'/g, "''")}' -ExpectedCommandLineFragments @('node.exe', 'C:\\app\\server.js')).Status; ` +
+      `$global:mode = 'hidden'; (Get-OwnedProcessClaim -PidFile '${pidFile.replace(/'/g, "''")}' -ExpectedCommandLineFragments @('node.exe', 'C:\\app\\server.js')).Status; ` +
+      `$global:mode = 'mismatch'; (Get-OwnedProcessClaim -PidFile '${pidFile.replace(/'/g, "''")}' -ExpectedCommandLineFragments @('node.exe', 'C:\\app\\server.js')).Status; ` +
+      `$global:mode = 'owned'; (Get-OwnedProcessClaim -PidFile '${pidFile.replace(/'/g, "''")}' -ExpectedCommandLineFragments @('node.exe', 'C:\\app\\server.js')).Status`;
+    assert.deepEqual(powershell(script).split(/\r?\n/), [
+      "Missing",
+      "Unverifiable",
+      "Unverifiable",
+      "Mismatch",
+      "Owned",
+    ]);
+  } finally {
+    fs.rmSync(pidFile, { force: true });
+  }
+});
+
 test("owned process start atomically records exactly one integer PID", () => {
   const escaped = modulePath.replace(/'/g, "''");
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "codex-status-pid-success-"));
@@ -456,9 +487,9 @@ test("stop path revalidates the exact PID and never terminates an ownership mism
       `$global:queries++; if ($ClassName -ne 'Win32_Process' -or $Filter -ne 'ProcessId = 4242') { throw 'unexpected query' }; ` +
       `[pscustomobject]@{ ProcessId = 4242; CommandLine = '"node.exe" C:\\other\\server.js' } }; ` +
       `function global:Invoke-CimMethod { $global:terminated++; throw 'must not terminate' }; ` +
-      `[string]((Stop-OwnedProcessFromPidFile -PidFile '${pidFile.replace(/'/g, "''")}' -ExpectedCommandLineFragments @('node.exe', 'C:\\app\\server.js')).Status); ` +
-      `"$global:queries|$global:terminated"`;
-    assert.deepEqual(powershell(script).split(/\r?\n/), ["NoOwnedProcess", "1|0"]);
+      `$result = Stop-OwnedProcessFromPidFile -PidFile '${pidFile.replace(/'/g, "''")}' -ExpectedCommandLineFragments @('node.exe', 'C:\\app\\server.js'); ` +
+      `"$($result.Status)|$global:queries|$global:terminated|$(Test-Path -LiteralPath '${pidFile.replace(/'/g, "''")}')"`;
+    assert.equal(powershell(script), "TerminationFailed|1|0|True");
   } finally {
     fs.rmSync(pidFile, { force: true });
   }
@@ -502,6 +533,23 @@ test("newest tunnel URL follows the newest valid log file timestamp", () => {
     assert.equal(output, "https://new.trycloudflare.com");
   } finally {
     fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("stop path preserves a PID claim when the command line is unavailable", () => {
+  const escaped = modulePath.replace(/'/g, "''");
+  const pidFile = path.join(os.tmpdir(), `codex-status-stop-hidden-${process.pid}.pid`);
+  fs.writeFileSync(pidFile, "4242", "ascii");
+  try {
+    const script =
+      `Import-Module '${escaped}' -Force; $global:terminated = 0; ` +
+      `function global:Get-CimInstance { [pscustomobject]@{ ProcessId = 4242; CommandLine = $null } }; ` +
+      `function global:Invoke-CimMethod { $global:terminated++; throw 'must not terminate' }; ` +
+      `$result = Stop-OwnedProcessFromPidFile -PidFile '${pidFile.replace(/'/g, "''")}' -ExpectedCommandLineFragments @('node.exe', 'C:\\app\\server.js'); ` +
+      `"$($result.Status)|$global:terminated|$(Test-Path -LiteralPath '${pidFile.replace(/'/g, "''")}')"`;
+    assert.equal(powershell(script), "TerminationFailed|0|True");
+  } finally {
+    fs.rmSync(pidFile, { force: true });
   }
 });
 
@@ -706,6 +754,8 @@ test("installer describes the exact current-user task without mutating Task Sche
   const descriptor = JSON.parse(result.stdout);
   assert.equal(descriptor.taskName, "CodexStatusLightWatchdog");
   assert.equal(descriptor.trigger, "AtLogOn");
+  assert.equal(descriptor.rescueIntervalMinutes, 1);
+  assert.equal(descriptor.multipleInstances, "IgnoreNew");
   assert.equal(descriptor.restartIntervalMinutes, 1);
   assert.equal(descriptor.restartCount, 999);
   assert.match(descriptor.arguments, /codex-status-watchdog\.ps1/);
@@ -729,6 +779,8 @@ function global:Unregister-ScheduledTask { throw 'scheduler mutation in Describe
   const descriptor = JSON.parse(output);
   assert.equal(descriptor.taskName, "CodexStatusLightWatchdog");
   assert.equal(descriptor.trigger, "AtLogOn");
+  assert.equal(descriptor.rescueIntervalMinutes, 1);
+  assert.equal(descriptor.multipleInstances, "IgnoreNew");
 });
 
 test("installer registers the exact task descriptor after configuration check", () => {
@@ -748,9 +800,26 @@ function global:New-ScheduledTaskAction {
   [pscustomobject]@{ Execute = $Execute; Argument = $Argument }
 }
 function global:New-ScheduledTaskTrigger {
-  param([switch]$AtLogOn, [string]$User)
-  $global:events += 'trigger'
-  [pscustomobject]@{ AtLogOn = [bool]$AtLogOn; User = $User }
+  param(
+    [switch]$AtLogOn,
+    [string]$User,
+    [switch]$Once,
+    [DateTime]$At,
+    [TimeSpan]$RepetitionInterval
+  )
+  if ($AtLogOn) {
+    $global:events += 'trigger:logon'
+    return [pscustomobject]@{ Kind = 'AtLogOn'; User = $User }
+  }
+  if ($Once) {
+    $global:events += 'trigger:rescue'
+    return [pscustomobject]@{
+      Kind = 'Once'
+      At = $At.ToString('o')
+      RepetitionIntervalMinutes = $RepetitionInterval.TotalMinutes
+    }
+  }
+  throw 'unexpected trigger'
 }
 function global:New-ScheduledTaskSettingsSet {
   param(
@@ -758,7 +827,8 @@ function global:New-ScheduledTaskSettingsSet {
     [switch]$DontStopIfGoingOnBatteries,
     [TimeSpan]$RestartInterval,
     [int]$RestartCount,
-    [TimeSpan]$ExecutionTimeLimit
+    [TimeSpan]$ExecutionTimeLimit,
+    [string]$MultipleInstances
   )
   $global:events += 'settings'
   [pscustomobject]@{
@@ -767,6 +837,7 @@ function global:New-ScheduledTaskSettingsSet {
     RestartIntervalMinutes = $RestartInterval.TotalMinutes
     RestartCount = $RestartCount
     ExecutionTimeLimitSeconds = $ExecutionTimeLimit.TotalSeconds
+    MultipleInstances = $MultipleInstances
   }
 }
 function global:New-ScheduledTaskPrincipal {
@@ -792,11 +863,16 @@ function global:Start-ScheduledTask {
   $global:events += 'start'
   $global:startTaskName = $TaskName
 }
+function global:Start-Sleep { param([int]$Milliseconds) }
+function global:Get-ScheduledTask {
+  param([string]$TaskName, [string]$ErrorAction)
+  [pscustomobject]@{ TaskName = $TaskName; State = 'Running' }
+}
 . '${escapedInstallerPath}' -StartNow
 [ordered]@{ Events = $global:events; Check = $global:check; Registration = $global:registration; StartTaskName = $global:startTaskName } | ConvertTo-Json -Compress -Depth 8
 `);
   const result = JSON.parse(output);
-  assert.deepEqual(result.Events, ["check", "action", "trigger", "settings", "principal", "register", "start"]);
+  assert.deepEqual(result.Events, ["check", "action", "trigger:logon", "trigger:rescue", "settings", "principal", "register", "start"]);
   assert.equal(result.Check.Arguments[result.Check.Arguments.length - 1], "-CheckConfiguration");
   assert.equal(result.Check.Wait, true);
   assert.equal(result.Check.PassThru, true);
@@ -804,17 +880,41 @@ function global:Start-ScheduledTask {
   assert.equal(result.Registration.Force, true);
   assert.match(result.Registration.Execute.toLowerCase(), /powershell\.exe$/);
   assert.equal(result.Registration.Argument, `-NoProfile -ExecutionPolicy Bypass -File "${path.join(root, "scripts", "codex-status-watchdog.ps1")}"`);
-  assert.equal(result.Registration.Trigger.AtLogOn, true);
-  assert.equal(result.Registration.Trigger.User, process.env.USERNAME);
+  assert.equal(result.Registration.Trigger.length, 2);
+  assert.equal(result.Registration.Trigger[0].Kind, "AtLogOn");
+  assert.equal(result.Registration.Trigger[0].User, process.env.USERNAME);
+  assert.equal(result.Registration.Trigger[1].Kind, "Once");
+  assert.equal(result.Registration.Trigger[1].RepetitionIntervalMinutes, 1);
   assert.equal(result.Registration.Settings.AllowStartIfOnBatteries, true);
   assert.equal(result.Registration.Settings.DontStopIfGoingOnBatteries, true);
   assert.equal(result.Registration.Settings.RestartIntervalMinutes, 1);
   assert.equal(result.Registration.Settings.RestartCount, 999);
   assert.equal(result.Registration.Settings.ExecutionTimeLimitSeconds, 0);
+  assert.equal(result.Registration.Settings.MultipleInstances, "IgnoreNew");
   assert.equal(result.Registration.Principal.LogonType, "Interactive");
   assert.equal(result.Registration.Principal.RunLevel, "Limited");
   assert.match(result.Registration.Principal.UserId, new RegExp(`${process.env.USERNAME}$`, "i"));
   assert.equal(result.StartTaskName, "CodexStatusLightWatchdog");
+});
+
+test("installer fails StartNow when the task never remains running", () => {
+  const installerPath = path.join(root, "scripts", "install-codex-status-watchdog.ps1");
+  const escapedInstallerPath = installerPath.replace(/'/g, "''");
+  const output = runInstallerHarness(`
+function global:Start-Process { param([string]$FilePath, [string[]]$ArgumentList, [switch]$Wait, [switch]$PassThru, [string]$WindowStyle) [pscustomobject]@{ ExitCode = 0 } }
+function global:New-ScheduledTaskAction { param([string]$Execute, [string]$Argument) [pscustomobject]@{} }
+function global:New-ScheduledTaskTrigger { param([switch]$AtLogOn, [string]$User, [switch]$Once, [DateTime]$At, [TimeSpan]$RepetitionInterval) [pscustomobject]@{} }
+function global:New-ScheduledTaskSettingsSet { param([switch]$AllowStartIfOnBatteries, [switch]$DontStopIfGoingOnBatteries, [TimeSpan]$RestartInterval, [int]$RestartCount, [TimeSpan]$ExecutionTimeLimit, [string]$MultipleInstances) [pscustomobject]@{} }
+function global:New-ScheduledTaskPrincipal { param([string]$UserId, [string]$LogonType, [string]$RunLevel) [pscustomobject]@{} }
+function global:Register-ScheduledTask { param([string]$TaskName, $Action, $Trigger, $Settings, $Principal, [switch]$Force) }
+function global:Start-ScheduledTask { param([string]$TaskName) }
+function global:Start-Sleep { param([int]$Milliseconds) }
+function global:Get-ScheduledTask { param([string]$TaskName, [string]$ErrorAction) [pscustomobject]@{ TaskName = $TaskName; State = 'Ready' } }
+try { . '${escapedInstallerPath}' -StartNow } catch { $global:errorMessage = $_.Exception.Message }
+[ordered]@{ Error = $global:errorMessage } | ConvertTo-Json -Compress
+`);
+  const result = JSON.parse(output);
+  assert.match(result.Error, /did not remain Running/);
 });
 
 test("installer uses Force for repeated registrations without creating another task name", () => {
@@ -824,8 +924,8 @@ test("installer uses Force for repeated registrations without creating another t
 $global:registrations = @()
 function global:Start-Process { param([string]$FilePath, [string[]]$ArgumentList, [switch]$Wait, [switch]$PassThru, [string]$WindowStyle) [pscustomobject]@{ ExitCode = 0 } }
 function global:New-ScheduledTaskAction { param([string]$Execute, [string]$Argument) [pscustomobject]@{ Execute = $Execute; Argument = $Argument } }
-function global:New-ScheduledTaskTrigger { param([switch]$AtLogOn, [string]$User) [pscustomobject]@{ AtLogOn = [bool]$AtLogOn; User = $User } }
-function global:New-ScheduledTaskSettingsSet { param([switch]$AllowStartIfOnBatteries, [switch]$DontStopIfGoingOnBatteries, [TimeSpan]$RestartInterval, [int]$RestartCount, [TimeSpan]$ExecutionTimeLimit) [pscustomobject]@{} }
+function global:New-ScheduledTaskTrigger { param([switch]$AtLogOn, [string]$User, [switch]$Once, [DateTime]$At, [TimeSpan]$RepetitionInterval) [pscustomobject]@{ AtLogOn = [bool]$AtLogOn; Once = [bool]$Once; User = $User } }
+function global:New-ScheduledTaskSettingsSet { param([switch]$AllowStartIfOnBatteries, [switch]$DontStopIfGoingOnBatteries, [TimeSpan]$RestartInterval, [int]$RestartCount, [TimeSpan]$ExecutionTimeLimit, [string]$MultipleInstances) [pscustomobject]@{} }
 function global:New-ScheduledTaskPrincipal { param([string]$UserId, [string]$LogonType, [string]$RunLevel) [pscustomobject]@{} }
 function global:Register-ScheduledTask { param([string]$TaskName, $Action, $Trigger, $Settings, $Principal, [switch]$Force) $global:registrations += [pscustomobject]@{ TaskName = $TaskName; Force = [bool]$Force } }
 . '${escapedInstallerPath}'

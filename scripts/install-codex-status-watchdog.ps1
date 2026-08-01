@@ -26,6 +26,8 @@ if ($Describe) {
   $descriptor = [ordered]@{
     taskName = $taskName
     trigger = 'AtLogOn'
+    rescueIntervalMinutes = 1
+    multipleInstances = 'IgnoreNew'
     restartIntervalMinutes = 1
     restartCount = 999
     arguments = $arguments
@@ -55,12 +57,18 @@ else {
   }
 
   $action = New-ScheduledTaskAction -Execute $powerShellPath -Argument $arguments
-  $trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
+  $logonTrigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
+  $rescueTrigger = New-ScheduledTaskTrigger `
+    -Once `
+    -At (Get-Date).AddMinutes(1) `
+    -RepetitionInterval (New-TimeSpan -Minutes 1)
+  $triggers = @($logonTrigger, $rescueTrigger)
   $settings = New-ScheduledTaskSettingsSet `
     -AllowStartIfOnBatteries `
     -DontStopIfGoingOnBatteries `
     -RestartInterval (New-TimeSpan -Minutes 1) `
     -RestartCount 999 `
+    -MultipleInstances IgnoreNew `
     -ExecutionTimeLimit (New-TimeSpan -Seconds 0)
   $principal = New-ScheduledTaskPrincipal `
     -UserId ([System.Security.Principal.WindowsIdentity]::GetCurrent().Name) `
@@ -70,12 +78,28 @@ else {
   Register-ScheduledTask `
     -TaskName $taskName `
     -Action $action `
-    -Trigger $trigger `
+    -Trigger $triggers `
     -Settings $settings `
     -Principal $principal `
     -Force | Out-Null
 
   if ($StartNow) {
     Start-ScheduledTask -TaskName $taskName
+    $runningSamples = 0
+    for ($attempt = 0; $attempt -lt 20 -and $runningSamples -lt 4; $attempt++) {
+      Start-Sleep -Milliseconds 250
+      $startedTask = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue |
+        Where-Object { $_.TaskName -eq $taskName } |
+        Select-Object -First 1
+      if ($null -ne $startedTask -and [string]$startedTask.State -eq 'Running') {
+        $runningSamples++
+      }
+      else {
+        $runningSamples = 0
+      }
+    }
+    if ($runningSamples -lt 4) {
+      throw "Scheduled task '$taskName' did not remain Running after StartNow. The one-minute rescue trigger will retry automatically."
+    }
   }
 }

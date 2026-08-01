@@ -60,7 +60,7 @@ function Test-ExpectedCommandLine {
   return $remaining.Length -eq 0
 }
 
-function Get-OwnedProcessFromPidFile {
+function Get-OwnedProcessClaim {
   [CmdletBinding()]
   param(
     [Parameter(Mandatory = $true)]
@@ -70,31 +70,106 @@ function Get-OwnedProcessFromPidFile {
   )
 
   if (-not (Test-Path -LiteralPath $PidFile -PathType Leaf)) {
-    return $null
+    return [pscustomobject]@{
+      Status = 'Missing'
+      Process = $null
+      ProcessId = $null
+      Error = 'PID claim does not exist.'
+    }
   }
 
   try {
     $pidText = [System.IO.File]::ReadAllText($PidFile).Trim()
     if ($pidText -notmatch '^[0-9]+$') {
-      return $null
+      return [pscustomobject]@{
+        Status = 'Unverifiable'
+        Process = $null
+        ProcessId = $null
+        Error = 'PID claim is not a positive integer.'
+      }
     }
 
     $processId = [uint32]$pidText
     if ($processId -eq 0) {
-      return $null
+      return [pscustomobject]@{
+        Status = 'Unverifiable'
+        Process = $null
+        ProcessId = $null
+        Error = 'PID claim is not a positive integer.'
+      }
     }
+  }
+  catch {
+    return [pscustomobject]@{
+      Status = 'Unverifiable'
+      Process = $null
+      ProcessId = $null
+      Error = $_.Exception.Message
+    }
+  }
 
+  try {
     $process = Get-CimInstance -ClassName Win32_Process -Filter ("ProcessId = {0}" -f $processId) -ErrorAction Stop
   }
   catch {
+    return [pscustomobject]@{
+      Status = 'Unverifiable'
+      Process = $null
+      ProcessId = $processId
+      Error = $_.Exception.Message
+    }
+  }
+
+  if ($null -eq $process) {
+    return [pscustomobject]@{
+      Status = 'Missing'
+      Process = $null
+      ProcessId = $processId
+      Error = 'Claimed process does not exist.'
+    }
+  }
+
+  if ([string]::IsNullOrWhiteSpace([string]$process.CommandLine)) {
+    return [pscustomobject]@{
+      Status = 'Unverifiable'
+      Process = $process
+      ProcessId = $processId
+      Error = 'Claimed process command line is unavailable.'
+    }
+  }
+
+  if (-not (Test-ExpectedCommandLine -CommandLine $process.CommandLine -ExpectedFragments $ExpectedCommandLineFragments)) {
+    return [pscustomobject]@{
+      Status = 'Mismatch'
+      Process = $process
+      ProcessId = $processId
+      Error = 'Claimed process command line does not match the expected command.'
+    }
+  }
+
+  return [pscustomobject]@{
+    Status = 'Owned'
+    Process = $process
+    ProcessId = $processId
+    Error = $null
+  }
+}
+
+function Get-OwnedProcessFromPidFile {
+  [CmdletBinding()]
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$PidFile,
+    [Parameter(Mandatory = $true)]
+    [string[]]$ExpectedCommandLineFragments
+  )
+
+  $claim = Get-OwnedProcessClaim -PidFile $PidFile -ExpectedCommandLineFragments $ExpectedCommandLineFragments
+  if ($claim.Status -ne 'Owned') {
     return $null
   }
 
-  if ($null -eq $process -or -not (Test-ExpectedCommandLine -CommandLine $process.CommandLine -ExpectedFragments $ExpectedCommandLineFragments)) {
-    return $null
-  }
-
-  return $process
+  return $claim.Process
 }
 
 function Stop-OwnedProcessFromPidFile {
@@ -107,13 +182,21 @@ function Stop-OwnedProcessFromPidFile {
   )
 
   # This lookup validates the one recorded PID immediately before terminating its CIM object.
-  $process = Get-OwnedProcessFromPidFile -PidFile $PidFile -ExpectedCommandLineFragments $ExpectedCommandLineFragments
-  if ($null -eq $process) {
+  $claim = Get-OwnedProcessClaim -PidFile $PidFile -ExpectedCommandLineFragments $ExpectedCommandLineFragments
+  if ($claim.Status -eq 'Missing') {
     return [pscustomobject]@{
       Status = 'NoOwnedProcess'
       Error = $null
     }
   }
+  if ($claim.Status -ne 'Owned') {
+    return [pscustomobject]@{
+      Status = 'TerminationFailed'
+      Error = "Process ownership is $($claim.Status): $($claim.Error)"
+    }
+  }
+
+  $process = $claim.Process
 
   try {
     $result = Invoke-CimMethod -InputObject $process -MethodName 'Terminate' -ErrorAction Stop
@@ -961,6 +1044,7 @@ function Resolve-WatchdogConfiguration {
 Export-ModuleMember -Function @(
   'Get-TunnelUrlFromText',
   'Test-ExpectedCommandLine',
+  'Get-OwnedProcessClaim',
   'Get-OwnedProcessFromPidFile',
   'Stop-OwnedProcessFromPidFile',
   'Invoke-OwnedProcessReplacement',
