@@ -81,6 +81,169 @@ function Get-OwnedProcessFromPidFile {
   return $process
 }
 
+function Stop-OwnedProcessFromPidFile {
+  [CmdletBinding()]
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$PidFile,
+    [Parameter(Mandatory = $true)]
+    [string[]]$ExpectedCommandLineFragments
+  )
+
+  # This lookup validates the one recorded PID immediately before terminating its CIM object.
+  $process = Get-OwnedProcessFromPidFile -PidFile $PidFile -ExpectedCommandLineFragments $ExpectedCommandLineFragments
+  if ($null -eq $process) {
+    return $false
+  }
+
+  try {
+    $result = Invoke-CimMethod -InputObject $process -MethodName 'Terminate' -ErrorAction Stop
+    return $result.ReturnValue -eq 0
+  }
+  catch {
+    return $false
+  }
+}
+
+function Get-NewestTunnelUrlFromLogFiles {
+  [CmdletBinding()]
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$OutputLog,
+    [Parameter(Mandatory = $true)]
+    [string]$ErrorLog
+  )
+
+  $candidates = foreach ($logPath in @($OutputLog, $ErrorLog)) {
+    if (-not (Test-Path -LiteralPath $logPath -PathType Leaf)) {
+      continue
+    }
+
+    $url = Get-TunnelUrlFromText -Text ([System.IO.File]::ReadAllText($logPath))
+    if (-not [string]::IsNullOrWhiteSpace($url)) {
+      $item = Get-Item -LiteralPath $logPath -Force
+      [pscustomobject]@{
+        Url = $url
+        LastWriteTimeUtc = $item.LastWriteTimeUtc
+        Path = $item.FullName
+      }
+    }
+  }
+
+  if ($null -eq $candidates) {
+    return $null
+  }
+
+  return ($candidates | Sort-Object -Property LastWriteTimeUtc, Path -Descending | Select-Object -First 1).Url
+}
+
+function Clear-OwnedTunnelLogs {
+  [CmdletBinding()]
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$StateDirectory
+  )
+
+  foreach ($fileName in @('tunnel.out.log', 'tunnel.err.log')) {
+    $logPath = Join-Path $StateDirectory $fileName
+    if (Test-Path -LiteralPath $logPath -PathType Leaf) {
+      Remove-Item -LiteralPath $logPath -Force
+    }
+  }
+}
+
+function Get-WatchdogIntervalSeconds {
+  [CmdletBinding()]
+  param(
+    [Parameter(Mandatory = $true)]
+    [int]$IntervalSeconds
+  )
+
+  return [Math]::Max(5, $IntervalSeconds)
+}
+
+function Invoke-PublicStatusTransition {
+  [CmdletBinding()]
+  param(
+    [Parameter(Mandatory = $true)]
+    [psobject]$State,
+    [AllowNull()]
+    [string]$TunnelUrl,
+    [Parameter(Mandatory = $true)]
+    [bool]$PublicStatusHealthy,
+    [Parameter(Mandatory = $true)]
+    [scriptblock]$PublishTunnel,
+    [Parameter(Mandatory = $true)]
+    [scriptblock]$RotateTunnel
+  )
+
+  $publicationAttempted = $false
+  $publicationSucceeded = $false
+  $rotationRequested = $false
+
+  if (-not $PublicStatusHealthy) {
+    $State.PublicFailures = [int]$State.PublicFailures + 1
+    if ($State.PublicFailures -ge 3) {
+      & $RotateTunnel | Out-Null
+      $State.PublicFailures = 0
+      $rotationRequested = $true
+    }
+  }
+  else {
+    $State.PublicFailures = 0
+    if (-not [string]::IsNullOrWhiteSpace($TunnelUrl) -and $TunnelUrl -ne $State.LastPublishedUrl) {
+      $publicationAttempted = $true
+      $publicationSucceeded = [bool](& $PublishTunnel $TunnelUrl)
+      if ($publicationSucceeded) {
+        $State.LastPublishedUrl = $TunnelUrl
+      }
+    }
+  }
+
+  return [pscustomobject]@{
+    State = $State
+    PublicationAttempted = $publicationAttempted
+    PublicationSucceeded = $publicationSucceeded
+    RotationRequested = $rotationRequested
+  }
+}
+
+function Invoke-WatchdogMutex {
+  [CmdletBinding()]
+  param(
+    [Parameter(Mandatory = $true)]
+    [object]$Mutex,
+    [Parameter(Mandatory = $true)]
+    [scriptblock]$OnContention,
+    [Parameter(Mandatory = $true)]
+    [scriptblock]$Action
+  )
+
+  $ownsMutex = $false
+  try {
+    try {
+      $ownsMutex = $Mutex.WaitOne(0)
+    }
+    catch [System.Threading.AbandonedMutexException] {
+      $ownsMutex = $true
+    }
+
+    if (-not $ownsMutex) {
+      & $OnContention | Out-Null
+      return $false
+    }
+
+    & $Action | Out-Null
+    return $true
+  }
+  finally {
+    if ($ownsMutex) {
+      $Mutex.ReleaseMutex()
+    }
+    $Mutex.Dispose()
+  }
+}
+
 function Test-HttpEndpoint {
   [CmdletBinding()]
   param(
@@ -174,6 +337,12 @@ Export-ModuleMember -Function @(
   'Get-TunnelUrlFromText',
   'Test-ExpectedCommandLine',
   'Get-OwnedProcessFromPidFile',
+  'Stop-OwnedProcessFromPidFile',
+  'Get-NewestTunnelUrlFromLogFiles',
+  'Clear-OwnedTunnelLogs',
+  'Get-WatchdogIntervalSeconds',
+  'Invoke-PublicStatusTransition',
+  'Invoke-WatchdogMutex',
   'Test-HttpEndpoint',
   'Resolve-WatchdogConfiguration'
 )

@@ -26,34 +26,6 @@ function Write-WatchdogLog {
   Add-Content -LiteralPath (Join-Path $config.stateDirectory 'watchdog.log') -Value ("{0:u} {1}" -f (Get-Date), $Message)
 }
 
-function Clear-ExactFile {
-  param(
-    [Parameter(Mandatory = $true)]
-    [string]$Path
-  )
-
-  if (Test-Path -LiteralPath $Path -PathType Leaf) {
-    Remove-Item -LiteralPath $Path -Force
-  }
-}
-
-function Stop-OwnedProcess {
-  param(
-    [Parameter(Mandatory = $true)]
-    [string]$PidFile,
-    [Parameter(Mandatory = $true)]
-    [string[]]$ExpectedFragments
-  )
-
-  $process = Get-OwnedProcessFromPidFile -PidFile $PidFile -ExpectedCommandLineFragments $ExpectedFragments
-  if ($null -eq $process) {
-    return $false
-  }
-
-  Stop-Process -Id ([int]$process.ProcessId) -Force -ErrorAction Stop
-  return $true
-}
-
 function Start-OwnedProcess {
   param(
     [Parameter(Mandatory = $true)]
@@ -74,43 +46,9 @@ function Start-OwnedProcess {
   return $process
 }
 
-function Get-TunnelUrlFromLogs {
-  param(
-    [Parameter(Mandatory = $true)]
-    [string]$OutputLog,
-    [Parameter(Mandatory = $true)]
-    [string]$ErrorLog
-  )
-
-  $logText = ''
-  foreach ($logPath in @($OutputLog, $ErrorLog)) {
-    if (Test-Path -LiteralPath $logPath -PathType Leaf) {
-      $logText += [System.IO.File]::ReadAllText($logPath)
-    }
-  }
-  return Get-TunnelUrlFromText -Text $logText
-}
-
-$IntervalSeconds = [Math]::Max(5, $IntervalSeconds)
+$IntervalSeconds = Get-WatchdogIntervalSeconds -IntervalSeconds $IntervalSeconds
 $mutex = New-Object System.Threading.Mutex($false, 'Local\CodexStatusLightWatchdog')
-$ownsMutex = $false
-
-try {
-  try {
-    $ownsMutex = $mutex.WaitOne(0)
-  }
-  catch [System.Threading.AbandonedMutexException] {
-    $ownsMutex = $true
-  }
-
-  if (-not $ownsMutex) {
-    if (-not (Test-Path -LiteralPath $config.stateDirectory -PathType Container)) {
-      New-Item -ItemType Directory -Path $config.stateDirectory -Force | Out-Null
-    }
-    Write-WatchdogLog 'watchdog already running'
-    exit 0
-  }
-
+$watchdogAction = {
   if (-not (Test-Path -LiteralPath $config.stateDirectory -PathType Container)) {
     New-Item -ItemType Directory -Path $config.stateDirectory -Force | Out-Null
   }
@@ -123,56 +61,69 @@ try {
   $tunnelErrorLog = Join-Path $config.stateDirectory 'tunnel.err.log'
   $serverFragments = @($config.nodePath, $config.serverPath)
   $tunnelFragments = @($config.cloudflaredPath, 'tunnel', '--url', $config.localTunnelUrl, '--no-autoupdate')
-  $publicFailures = 0
-  $lastPublishedUrl = $null
+  $publicState = [pscustomobject]@{
+    PublicFailures = 0
+    LastPublishedUrl = $null
+  }
 
   do {
     try {
       if (-not (Test-HttpEndpoint -Url $config.localHealthUrl -TimeoutSeconds 3)) {
-        if (Stop-OwnedProcess -PidFile $serverPidFile -ExpectedFragments $serverFragments) {
+        if (Stop-OwnedProcessFromPidFile -PidFile $serverPidFile -ExpectedCommandLineFragments $serverFragments) {
           Write-WatchdogLog 'stopped owned unhealthy server'
         }
-        Clear-ExactFile -Path $serverPidFile
+        if (Test-Path -LiteralPath $serverPidFile -PathType Leaf) {
+          Remove-Item -LiteralPath $serverPidFile -Force
+        }
         Start-OwnedProcess -FilePath $config.nodePath -Arguments @($config.serverPath) -PidFile $serverPidFile -OutputLog $serverOutputLog -ErrorLog $serverErrorLog | Out-Null
         Write-WatchdogLog 'started owned server'
       }
       else {
         $tunnel = Get-OwnedProcessFromPidFile -PidFile $tunnelPidFile -ExpectedCommandLineFragments $tunnelFragments
         if ($null -eq $tunnel) {
-          Clear-ExactFile -Path $tunnelPidFile
-          Clear-ExactFile -Path $tunnelOutputLog
-          Clear-ExactFile -Path $tunnelErrorLog
+          if (Test-Path -LiteralPath $tunnelPidFile -PathType Leaf) {
+            Remove-Item -LiteralPath $tunnelPidFile -Force
+          }
+          Clear-OwnedTunnelLogs -StateDirectory $config.stateDirectory
           Start-OwnedProcess -FilePath $config.cloudflaredPath -Arguments @('tunnel', '--url', $config.localTunnelUrl, '--no-autoupdate') -PidFile $tunnelPidFile -OutputLog $tunnelOutputLog -ErrorLog $tunnelErrorLog | Out-Null
           Write-WatchdogLog 'started owned tunnel'
         }
 
-        $tunnelUrl = Get-TunnelUrlFromLogs -OutputLog $tunnelOutputLog -ErrorLog $tunnelErrorLog
+        $tunnelUrl = Get-NewestTunnelUrlFromLogFiles -OutputLog $tunnelOutputLog -ErrorLog $tunnelErrorLog
+        $publicStatusHealthy = $false
         if ([string]::IsNullOrWhiteSpace($tunnelUrl)) {
-          $publicFailures++
-          Write-WatchdogLog ("tunnel URL unavailable ({0}/3)" -f $publicFailures)
-        }
-        elseif (Test-HttpEndpoint -Url ($tunnelUrl + '/api/status') -TimeoutSeconds 5) {
-          $publicFailures = 0
-          if ($tunnelUrl -ne $lastPublishedUrl) {
-            & $config.nodePath $config.publisherPath publish $tunnelUrl
-            if ($LASTEXITCODE -ne 0) {
-              throw "Endpoint publisher failed with exit code $LASTEXITCODE."
-            }
-            $lastPublishedUrl = $tunnelUrl
-            Write-WatchdogLog ("published tunnel URL $tunnelUrl")
-          }
+          Write-WatchdogLog 'tunnel URL unavailable'
         }
         else {
-          $publicFailures++
-          Write-WatchdogLog ("public status check failed ({0}/3)" -f $publicFailures)
+          $publicStatusHealthy = Test-HttpEndpoint -Url ($tunnelUrl + '/api/status') -TimeoutSeconds 5
+          if (-not $publicStatusHealthy) {
+            Write-WatchdogLog 'public status check failed'
+          }
         }
 
-        if ($publicFailures -ge 3) {
-          if (Stop-OwnedProcess -PidFile $tunnelPidFile -ExpectedFragments $tunnelFragments) {
+        $transition = Invoke-PublicStatusTransition -State $publicState -TunnelUrl $tunnelUrl -PublicStatusHealthy $publicStatusHealthy -PublishTunnel {
+          param($publishUrl)
+          & $config.nodePath $config.publisherPath publish $publishUrl | Out-Null
+          if ($LASTEXITCODE -ne 0) {
+            Write-WatchdogLog ("endpoint publisher failed with exit code $LASTEXITCODE")
+            return $false
+          }
+          return $true
+        } -RotateTunnel {
+          if (Stop-OwnedProcessFromPidFile -PidFile $tunnelPidFile -ExpectedCommandLineFragments $tunnelFragments) {
             Write-WatchdogLog 'stopped owned unhealthy tunnel'
           }
-          Clear-ExactFile -Path $tunnelPidFile
-          $publicFailures = 0
+          if (Test-Path -LiteralPath $tunnelPidFile -PathType Leaf) {
+            Remove-Item -LiteralPath $tunnelPidFile -Force
+          }
+        }
+        $publicState = $transition.State
+
+        if ($transition.RotationRequested) {
+          Write-WatchdogLog 'rotated owned tunnel after three public failures'
+        }
+        if ($transition.PublicationSucceeded) {
+          Write-WatchdogLog ("published tunnel URL $tunnelUrl")
         }
       }
     }
@@ -185,9 +136,14 @@ try {
     }
   } while (-not $RunOnce)
 }
-finally {
-  if ($ownsMutex) {
-    $mutex.ReleaseMutex()
+
+$didRun = Invoke-WatchdogMutex -Mutex $mutex -OnContention {
+  if (-not (Test-Path -LiteralPath $config.stateDirectory -PathType Container)) {
+    New-Item -ItemType Directory -Path $config.stateDirectory -Force | Out-Null
   }
-  $mutex.Dispose()
+  Write-WatchdogLog 'watchdog already running'
+} -Action $watchdogAction
+
+if (-not $didRun) {
+  exit 0
 }
