@@ -1026,6 +1026,7 @@
   </div>
 </div>
 
+<script src="./status-connection.js"></script>
 <script>
 var el = document.getElementById.bind(document);
 var currentSessions = [];
@@ -1035,16 +1036,27 @@ var carouselTimer = null;
 var lastGoodStatus = null;
 var lastSyncAt = null;
 var pageLoadTime = Date.now();
+var connectionApi = window.CodexStatusConnection;
+var ENDPOINT_REGISTRY_URL =
+  "https://raw.githubusercontent.com/molanjie/AI-Status-light/live-status/endpoint.json";
+var STATUS_API_STORAGE_KEY = "codex_status_api_base";
+var STATUS_REFRESH_MS = 1000;
+var REGISTRY_REFRESH_MS = 30000;
+var registryApiBase = "";
+var statusRequestInFlight = false;
+var failureTracker = connectionApi.createFailureTracker(3);
 var stateLabels = {
   idle: "空闲",
   processing: "处理中",
   waiting: "等待输入",
   completed: "已完成",
   syncing: "正在同步",
-  disconnected: "连接中断",
+  disconnected: "采集端离线",
   offline: "离线",
   error: "异常"
 };
+
+
 
 function renderSessionTitle() {
   if (!currentSessions.length) {
@@ -1120,40 +1132,39 @@ function renderConnectionState(state, label, detail, triedUrls) {
   el("error").className = "error" + (el("error").textContent ? " visible" : "");
 }
 
-var DEFAULT_STATUS_API_BASE = "";
-var STATUS_API_STORAGE_KEY = "codex_status_api_base";
-var STATUS_REFRESH_MS = 1000;
-
-function normalizeApiBase(value) {
-  return (value || "").replace(/\/+$/, "");
-}
-
-function addStatusApiCandidate(list, value) {
-  var base = normalizeApiBase(value);
-  if (base && list.indexOf(base) === -1) list.push(base);
+function restoreLastGoodSnapshot() {
+  var snapshot = null;
+  try {
+    snapshot = connectionApi.loadSnapshot(window.localStorage);
+  } catch (error) {}
+  if (!snapshot) return;
+  lastGoodStatus = snapshot.data;
+  lastSyncAt = snapshot.savedAt;
+  renderStatus(lastGoodStatus);
+  el("status-time").textContent = "上次同步 " + formatSyncTime(lastSyncAt);
 }
 
 function getStatusApiBases() {
-  var list = [];
   var params = new URLSearchParams(window.location.search);
-  addStatusApiCandidate(list, params.get("api"));
-  addStatusApiCandidate(list, window.CODEX_STATUS_API_BASE);
-  addStatusApiCandidate(list, DEFAULT_STATUS_API_BASE);
+  var storedBase = "";
   try {
-    addStatusApiCandidate(list, localStorage.getItem(STATUS_API_STORAGE_KEY));
-  } catch (err) {}
-  if (window.location.protocol === "file:") addStatusApiCandidate(list, "http://127.0.0.1:3456");
-  if (!list.length) list.push("");
-  return list;
+    storedBase = localStorage.getItem(STATUS_API_STORAGE_KEY);
+  } catch (error) {}
+  return connectionApi.buildApiCandidates({
+    explicitBase: params.get("api"),
+    registryBase: registryApiBase,
+    storedBase: storedBase,
+    isFile: window.location.protocol === "file:",
+  });
 }
 
 function getStatusApiUrl(base) {
-  return normalizeApiBase(base) + "/api/status";
+  return connectionApi.normalizeApiBase(base) + "/api/status";
 }
 
 function rememberStatusApiBase(base) {
   if (!base) return;
-  try { localStorage.setItem(STATUS_API_STORAGE_KEY, normalizeApiBase(base)); } catch (err) {}
+  try { localStorage.setItem(STATUS_API_STORAGE_KEY, connectionApi.normalizeApiBase(base)); } catch (err) {}
 }
 
 function formatTriedStatusApis(urls) {
@@ -1177,35 +1188,65 @@ function formatSyncTime(ts) {
   return new Date(ts).toLocaleTimeString();
 }
 
-async function fetchStatus() {
-  var bases = getStatusApiBases();
-  var triedUrls = [];
-  for (var i = 0; i < bases.length; i += 1) {
-    var base = bases[i];
-    var apiUrl = getStatusApiUrl(base);
-    triedUrls.push(apiUrl);
-    try {
-      var response = await fetchStatusFromApi(apiUrl);
-      if (!response.ok) throw new Error("HTTP " + response.status);
-      var data = await response.json();
-      rememberStatusApiBase(base);
-      lastGoodStatus = data;
-      lastSyncAt = Date.now();
-      renderStatus(data);
-      el("status-time").textContent = "已同步 " + formatSyncTime(lastSyncAt);
-      return;
-    } catch (err) {}
-  }
-
-  if (lastGoodStatus) {
-    renderConnectionState("disconnected", "连接中断", "正在显示上次有效状态", triedUrls);
-    return;
-  }
-  renderConnectionState("disconnected", "连接中断", "请确认本机服务或公网隧道正在运行", triedUrls);
+async function refreshEndpointRegistry() {
+  try {
+    var response = await fetch(
+      ENDPOINT_REGISTRY_URL + "?t=" + Date.now(),
+      { cache: "no-store" }
+    );
+    if (!response.ok) throw new Error("HTTP " + response.status);
+    var parsed = connectionApi.parseRegistry(await response.json());
+    if (!parsed) throw new Error("Invalid endpoint registry");
+    var changed = parsed.apiBase !== registryApiBase;
+    registryApiBase = parsed.apiBase;
+    if (changed) fetchStatus();
+  } catch (error) {}
 }
 
+async function fetchStatus() {
+  if (statusRequestInFlight) return;
+  statusRequestInFlight = true;
+  var triedUrls = [];
+  try {
+    var bases = getStatusApiBases();
+    for (var i = 0; i < bases.length; i += 1) {
+      var base = bases[i];
+      var apiUrl = getStatusApiUrl(base);
+      triedUrls.push(apiUrl);
+      try {
+        var response = await fetchStatusFromApi(apiUrl);
+        if (!response.ok) throw new Error("HTTP " + response.status);
+        var data = await response.json();
+        rememberStatusApiBase(base);
+        lastGoodStatus = data;
+        lastSyncAt = Date.now();
+        try {
+          connectionApi.saveSnapshot(window.localStorage, data, lastSyncAt);
+        } catch (storageError) {}
+        failureTracker.recordSuccess();
+        renderStatus(data);
+        el("status-time").textContent = "已同步 " + formatSyncTime(lastSyncAt);
+        return;
+      } catch (error) {}
+    }
+
+    if (!failureTracker.recordFailure()) return;
+    renderConnectionState(
+      "disconnected",
+      "采集端离线",
+      lastGoodStatus ? "正在显示上次有效状态" : "等待本机恢复连接",
+      triedUrls
+    );
+  } finally {
+    statusRequestInFlight = false;
+  }
+}
+
+restoreLastGoodSnapshot();
+refreshEndpointRegistry();
 fetchStatus();
 setInterval(fetchStatus, STATUS_REFRESH_MS);
+setInterval(refreshEndpointRegistry, REGISTRY_REFRESH_MS);
 
 // Uptime tracking
 function updateUptime() {
@@ -1611,7 +1652,7 @@ var tcStateColors = {
   processing: "#ff453a",
   waiting:    "#ffd60a",
   syncing:    "#ffd60a",
-  disconnected: "#ffd60a",
+  disconnected: "采集端离线",
   offline:    "#8e8e93",
   error:      "#ff7a45"
 };
@@ -1621,7 +1662,7 @@ var tcStateLabels = {
   processing: "正在处理",
   waiting:    "等待输入",
   syncing:    "正在同步",
-  disconnected: "连接中断",
+  disconnected: "采集端离线",
   offline:    "离线",
   error:      "异常"
 };
