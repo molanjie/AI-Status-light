@@ -1043,6 +1043,7 @@ var ENDPOINT_REGISTRY_URL =
 var STATUS_API_STORAGE_KEY = "codex_status_api_base";
 var STATUS_REFRESH_MS = 1000;
 var REGISTRY_REFRESH_MS = 30000;
+var REGISTRY_REQUEST_TIMEOUT_MS = 2500;
 var registryApiBase = "";
 var registryRequestInFlight = false;
 var statusRequestInFlight = false;
@@ -1195,10 +1196,14 @@ function formatSyncTime(ts) {
 async function refreshEndpointRegistry() {
   if (registryRequestInFlight) return;
   registryRequestInFlight = true;
+  var controller = new AbortController();
+  var timeoutId = setTimeout(function () {
+    controller.abort();
+  }, REGISTRY_REQUEST_TIMEOUT_MS);
   try {
     var response = await fetch(
       ENDPOINT_REGISTRY_URL + "?t=" + Date.now(),
-      { cache: "no-store" }
+      { cache: "no-store", signal: controller.signal }
     );
     if (!response.ok) throw new Error("HTTP " + response.status);
     var parsed = connectionApi.parseRegistry(await response.json());
@@ -1208,6 +1213,7 @@ async function refreshEndpointRegistry() {
     if (changed) fetchStatus();
   } catch (error) {
   } finally {
+    clearTimeout(timeoutId);
     registryRequestInFlight = false;
   }
 }

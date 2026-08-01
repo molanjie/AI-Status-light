@@ -57,11 +57,130 @@ test("extracts the newest valid Quick Tunnel URL", () => {
 test("command-line ownership requires every expected fragment", () => {
   const escaped = modulePath.replace(/'/g, "''");
   const output = powershell(
-    `Import-Module '${escaped}' -Force; ` +
+      `Import-Module '${escaped}' -Force; ` +
       `[string](Test-ExpectedCommandLine '"node.exe" C:\\app\\server.js' @('node.exe','C:\\app\\server.js')); ` +
-      `[string](Test-ExpectedCommandLine '"node.exe" C:\\other\\server.js' @('node.exe','C:\\app\\server.js'))`
+      `[string](Test-ExpectedCommandLine '"node.exe" C:\\other\\server.js' @('node.exe','C:\\app\\server.js')); ` +
+      `[string](Test-ExpectedCommandLine '"node.exe" C:\\app\\server.js --inspect' @('node.exe','C:\\app\\server.js'))`
   ).split(/\r?\n/);
-  assert.deepEqual(output, ["True", "False"]);
+  assert.deepEqual(output, ["True", "False", "False"]);
+});
+
+test("strict health and status probes reject generic HTTP success responses", () => {
+  const escaped = modulePath.replace(/'/g, "''");
+  const validStatus = JSON.stringify({
+    source: "codex-local",
+    state: "processing",
+    light: "red",
+    label: "Working",
+    sessionCount: 1,
+    sessions: [
+      {
+        title: "Focused test",
+        state: "processing",
+        lastStartedAt: 1785431999000,
+        lastCompletedAt: 0,
+        updatedAt: 1785432000000,
+      },
+    ],
+    totalThreads: 1,
+    hostname: "test-host",
+    lastCompletedAt: null,
+    updatedAt: 1785432000000,
+    error: "",
+  }).replace(/'/g, "''");
+  const validIdleStatus = JSON.stringify({
+    source: "codex-local",
+    state: "idle",
+    light: "green",
+    label: "Idle",
+    sessionCount: 0,
+    sessions: [],
+    totalThreads: 0,
+    hostname: "test-host",
+    lastCompletedAt: null,
+    updatedAt: 1785432000000,
+    error: "",
+  }).replace(/'/g, "''");
+  const script =
+    `Import-Module '${escaped}' -Force; ` +
+    `function global:Invoke-WebRequest { [CmdletBinding()] param([string]$Uri, [int]$TimeoutSec, [switch]$UseBasicParsing) ` +
+    `switch ($Uri) { ` +
+    `'http://test/empty' { [pscustomobject]@{ StatusCode = 204; Content = '' } } ` +
+    `'http://test/html' { [pscustomobject]@{ StatusCode = 200; Content = '<html>ok</html>' } } ` +
+    `'http://test/bad-json' { [pscustomobject]@{ StatusCode = 200; Content = '{broken' } } ` +
+    `'http://test/bad-health' { [pscustomobject]@{ StatusCode = 200; Content = '{"ok":true,"startedAt":"1785432000000","now":1785432005000}' } } ` +
+    `'http://test/health' { [pscustomobject]@{ StatusCode = 200; Content = '{"ok":true,"startedAt":1785432000000,"now":1785432005000}' } } ` +
+    `'http://test/bad-status' { [pscustomobject]@{ StatusCode = 200; Content = '{"state":"processing"}' } } ` +
+    `'http://test/status' { [pscustomobject]@{ StatusCode = 200; Content = '${validStatus}' } } ` +
+    `'http://test/idle-status' { [pscustomobject]@{ StatusCode = 200; Content = '${validIdleStatus}' } } ` +
+    `default { throw 'unexpected URL' } } }; ` +
+    `@('empty','html','bad-json','bad-health','health') | ForEach-Object { [string](Test-LocalHealthEndpoint -Url ('http://test/' + $_) -TimeoutSeconds 3) }; ` +
+    `@('empty','html','bad-json','bad-status','status','idle-status') | ForEach-Object { [string](Test-PublicStatusEndpoint -Url ('http://test/' + $_) -TimeoutSeconds 5) }`;
+
+  assert.deepEqual(powershell(script).split(/\r?\n/), [
+    "False",
+    "False",
+    "False",
+    "False",
+    "True",
+    "False",
+    "False",
+    "False",
+    "False",
+    "True",
+    "True",
+  ]);
+});
+
+test("local server gate refuses a healthy listener without exact PID ownership", () => {
+  const escaped = modulePath.replace(/'/g, "''");
+  const script =
+    `Import-Module '${escaped}' -Force; ` +
+    `$owned = [pscustomobject]@{ ProcessId = 4242 }; ` +
+    `Get-LocalServerGateDecision -LocalHealthValid $true -OwnedServer $null; ` +
+    `Get-LocalServerGateDecision -LocalHealthValid $true -OwnedServer $owned; ` +
+    `Get-LocalServerGateDecision -LocalHealthValid $false -OwnedServer $owned`;
+
+  assert.deepEqual(powershell(script).split(/\r?\n/), [
+    "OwnershipConflict",
+    "OwnedServerReady",
+    "RecoverServer",
+  ]);
+});
+
+test("GitHub auth preflight accepts non-empty GH_TOKEN without invoking gh", () => {
+  const escaped = modulePath.replace(/'/g, "''");
+  const output = powershell(
+    `Import-Module '${escaped}' -Force; ` +
+      `[string](Assert-GitHubAuthentication -GhPath 'C:\\gh.exe' -EnvironmentToken 'test-only-token' -RunAuthStatus { throw 'gh must not run' })`
+  );
+
+  assert.equal(output, "True");
+  assert.doesNotMatch(output, /test-only-token/);
+});
+
+test("GitHub auth preflight accepts authenticated gh CLI status", () => {
+  const escaped = modulePath.replace(/'/g, "''");
+  const output = powershell(
+    `Import-Module '${escaped}' -Force; ` +
+      `$global:checks = 0; ` +
+      `$result = Assert-GitHubAuthentication -GhPath 'C:\\gh.exe' -EnvironmentToken '' -RunAuthStatus { param($path) if ($path -ne 'C:\\gh.exe') { throw 'wrong gh path' }; $global:checks++; $true }; ` +
+      `"$result|$global:checks"`
+  );
+
+  assert.equal(output, "True|1");
+});
+
+test("GitHub auth preflight rejects unauthenticated CLI with a sanitized action", () => {
+  const escaped = modulePath.replace(/'/g, "''");
+  const output = powershell(
+    `Import-Module '${escaped}' -Force; ` +
+      `try { Assert-GitHubAuthentication -GhPath 'C:\\gh.exe' -EnvironmentToken '' -RunAuthStatus { throw 'secret-token auth failure' } | Out-Null } catch { $_.Exception.Message }`
+  );
+
+  assert.match(output, /gh auth login/);
+  assert.match(output, /GH_TOKEN/);
+  assert.doesNotMatch(output, /secret-token/);
 });
 
 test("configuration check returns dependency paths without starting processes", () => {
@@ -75,9 +194,15 @@ test("configuration check returns dependency paths without starting processes", 
       watchdogPath,
       "-CheckConfiguration",
     ],
-    { cwd: root, encoding: "utf8", windowsHide: true }
+    {
+      cwd: root,
+      encoding: "utf8",
+      env: { ...process.env, GH_TOKEN: "configuration-test-token" },
+      windowsHide: true,
+    }
   );
   assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.doesNotMatch(result.stdout + result.stderr, /configuration-test-token/);
   const config = JSON.parse(result.stdout);
   assert.equal(config.projectRoot, root);
   assert.match(config.nodePath.toLowerCase(), /node\.exe$/);
@@ -120,6 +245,94 @@ test("owned PID lookup queries exactly the recorded PID and validates its comman
   }
 });
 
+test("owned process start atomically records exactly one integer PID", () => {
+  const escaped = modulePath.replace(/'/g, "''");
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "codex-status-pid-success-"));
+  const pidFile = path.join(directory, "server.pid");
+  const escapedDirectory = directory.replace(/'/g, "''");
+  const escapedPidFile = pidFile.replace(/'/g, "''");
+  try {
+    const script =
+      `Import-Module '${escaped}' -Force; ` +
+      `$global:child = [pscustomobject]@{ Id = 4242 }; ` +
+      `$result = Start-OwnedProcess -FilePath 'C:\\node.exe' -Arguments @('C:\\app path\\server.js') -WorkingDirectory '${escapedDirectory}' -PidFile '${escapedPidFile}' -OutputLog '${escapedDirectory}\\server.out.log' -ErrorLog '${escapedDirectory}\\server.err.log' -StartProcessAction { param($filePath, $arguments, $workingDirectory, $outputLog, $errorLog) $global:child }; ` +
+      `"$($result.Id)|$([System.IO.File]::ReadAllText('${escapedPidFile}'))"`;
+
+    assert.equal(powershell(script), "4242|4242");
+    assert.deepEqual(
+      fs.readdirSync(directory).filter((name) => name.endsWith(".tmp")),
+      []
+    );
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("PID write failure kills and waits only for the just-created child", () => {
+  const escaped = modulePath.replace(/'/g, "''");
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "codex-status-pid-write-"));
+  const pidFile = path.join(directory, "server.pid");
+  const escapedDirectory = directory.replace(/'/g, "''");
+  const escapedPidFile = pidFile.replace(/'/g, "''");
+  try {
+    const script =
+      `Import-Module '${escaped}' -Force; ` +
+      `function global:Stop-Process { throw 'unrelated PID termination is forbidden' }; ` +
+      `$global:child = [pscustomobject]@{ Id = 4242; Killed = 0; Waited = 0; Disposed = 0 }; ` +
+      `$global:child | Add-Member ScriptMethod Kill { $this.Killed++ }; ` +
+      `$global:child | Add-Member ScriptMethod WaitForExit { $this.Waited++; $true }; ` +
+      `$global:child | Add-Member ScriptMethod Dispose { $this.Disposed++ }; ` +
+      `$global:unrelated = [pscustomobject]@{ Id = 9999; Killed = 0 }; ` +
+      `$global:tempPath = ''; ` +
+      `try { Start-OwnedProcess -FilePath 'C:\\node.exe' -Arguments @('C:\\app path\\server.js') -WorkingDirectory '${escapedDirectory}' -PidFile '${escapedPidFile}' -OutputLog '${escapedDirectory}\\server.out.log' -ErrorLog '${escapedDirectory}\\server.err.log' -StartProcessAction { $global:child } -WritePidAction { param($tempPath, $processId) $global:tempPath = $tempPath; [System.IO.File]::WriteAllText($tempPath, 'partial'); throw 'injected write failure' } -CommitPidAction { throw 'must not commit' } | Out-Null } catch { $message = $_.Exception.Message }; ` +
+      `"$message|$($global:child.Killed)|$($global:child.Waited)|$($global:child.Disposed)|$($global:unrelated.Killed)|$(Test-Path -LiteralPath $global:tempPath)|$(Test-Path -LiteralPath '${escapedPidFile}')"`;
+
+    assert.equal(
+      powershell(script),
+      "injected write failure|1|1|1|0|False|False"
+    );
+    assert.deepEqual(
+      fs.readdirSync(directory).filter((name) => name.endsWith(".tmp")),
+      []
+    );
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("PID replace failure preserves the prior claim and cleans the exact new child", () => {
+  const escaped = modulePath.replace(/'/g, "''");
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "codex-status-pid-replace-"));
+  const pidFile = path.join(directory, "server.pid");
+  fs.writeFileSync(pidFile, "7777", "ascii");
+  const escapedDirectory = directory.replace(/'/g, "''");
+  const escapedPidFile = pidFile.replace(/'/g, "''");
+  try {
+    const script =
+      `Import-Module '${escaped}' -Force; ` +
+      `function global:Stop-Process { throw 'unrelated PID termination is forbidden' }; ` +
+      `$global:child = [pscustomobject]@{ Id = 5252; Killed = 0; Waited = 0; Disposed = 0 }; ` +
+      `$global:child | Add-Member ScriptMethod Kill { $this.Killed++ }; ` +
+      `$global:child | Add-Member ScriptMethod WaitForExit { $this.Waited++; $true }; ` +
+      `$global:child | Add-Member ScriptMethod Dispose { $this.Disposed++ }; ` +
+      `$global:unrelated = [pscustomobject]@{ Id = 7777; Killed = 0 }; ` +
+      `$global:tempPath = ''; ` +
+      `try { Start-OwnedProcess -FilePath 'C:\\node.exe' -Arguments @('C:\\app path\\server.js') -WorkingDirectory '${escapedDirectory}' -PidFile '${escapedPidFile}' -OutputLog '${escapedDirectory}\\server.out.log' -ErrorLog '${escapedDirectory}\\server.err.log' -StartProcessAction { $global:child } -CommitPidAction { param($tempPath, $targetPath) $global:tempPath = $tempPath; throw 'injected replace failure' } | Out-Null } catch { $message = $_.Exception.Message }; ` +
+      `"$message|$($global:child.Killed)|$($global:child.Waited)|$($global:child.Disposed)|$($global:unrelated.Killed)|$(Test-Path -LiteralPath $global:tempPath)|$([System.IO.File]::ReadAllText('${escapedPidFile}'))"`;
+
+    assert.equal(
+      powershell(script),
+      "injected replace failure|1|1|1|0|False|7777"
+    );
+    assert.deepEqual(
+      fs.readdirSync(directory).filter((name) => name.endsWith(".tmp")),
+      []
+    );
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("configuration check does not create the watchdog state directory", () => {
   const stateRoot = fs.mkdtempSync(path.join(os.tmpdir(), "codex-status-config-"));
   try {
@@ -129,7 +342,11 @@ test("configuration check does not create the watchdog state directory", () => {
       {
         cwd: root,
         encoding: "utf8",
-        env: { ...process.env, LOCALAPPDATA: stateRoot },
+        env: {
+          ...process.env,
+          GH_TOKEN: "configuration-test-token",
+          LOCALAPPDATA: stateRoot,
+        },
         windowsHide: true,
       }
     );
@@ -226,6 +443,66 @@ test("public success resets failures and publishes only changed URLs after a suc
     "0|https://new.trycloudflare.com|1|False",
     "https://new.trycloudflare.com|2|False",
   ]);
+});
+
+test("publisher process timeout and nonzero exit remain unpublished and bounded", () => {
+  const escaped = modulePath.replace(/'/g, "''");
+  const script =
+    `Import-Module '${escaped}' -Force; ` +
+    `$timeoutProcess = [pscustomobject]@{ ExitCode = 0; Killed = 0; Disposed = 0; Waits = 0 }; ` +
+    `$timeoutProcess | Add-Member ScriptMethod WaitForExit { param($timeout) $this.Waits++; if ($null -eq $timeout) { return $true }; return $false }; ` +
+    `$timeoutProcess | Add-Member ScriptMethod Kill { $this.Killed++ }; ` +
+    `$timeoutProcess | Add-Member ScriptMethod Dispose { $this.Disposed++ }; ` +
+    `$failureProcess = [pscustomobject]@{ ExitCode = 17; Killed = 0; Disposed = 0; Waits = 0 }; ` +
+    `$failureProcess | Add-Member ScriptMethod WaitForExit { param($timeout) $this.Waits++; return $true }; ` +
+    `$failureProcess | Add-Member ScriptMethod Kill { $this.Killed++ }; ` +
+    `$failureProcess | Add-Member ScriptMethod Dispose { $this.Disposed++ }; ` +
+    `$global:nextProcess = $timeoutProcess; ` +
+    `function global:Start-Process { [CmdletBinding()] param([string]$FilePath, [string[]]$ArgumentList, [string]$WorkingDirectory, [string]$WindowStyle, [switch]$PassThru) $global:nextProcess }; ` +
+    `$timedOut = Invoke-EndpointPublisherProcess -NodePath 'C:\\node.exe' -PublisherPath 'C:\\app path\\endpoint-registry.js' -TunnelUrl 'https://new.trycloudflare.com' -WorkingDirectory 'C:\\app path' -TimeoutMilliseconds 25; ` +
+    `"$($timedOut.Status)|$($timedOut.Succeeded)|$($timeoutProcess.Killed)|$($timeoutProcess.Waits)|$($timeoutProcess.Disposed)"; ` +
+    `$global:nextProcess = $failureProcess; ` +
+    `$failed = Invoke-EndpointPublisherProcess -NodePath 'C:\\node.exe' -PublisherPath 'C:\\app path\\endpoint-registry.js' -TunnelUrl 'https://new.trycloudflare.com' -WorkingDirectory 'C:\\app path' -TimeoutMilliseconds 25; ` +
+    `"$($failed.Status)|$($failed.Succeeded)|$($failed.ExitCode)|$($failureProcess.Killed)|$($failureProcess.Disposed)"`;
+
+  assert.deepEqual(powershell(script).split(/\r?\n/), [
+    "TimedOut|False|1|2|1",
+    "Failed|False|17|0|1",
+  ]);
+});
+
+test("external failure backoff progresses to sixty seconds and resets on success", () => {
+  const escaped = modulePath.replace(/'/g, "''");
+  const script =
+    `Import-Module '${escaped}' -Force; ` +
+    `$state = [pscustomobject]@{ ExternalFailures = 0 }; ` +
+    `1..6 | ForEach-Object { $delay = Update-WatchdogBackoff -State $state -Succeeded $false -BaseDelaySeconds 10; "$delay|$($state.ExternalFailures)" }; ` +
+    `$delay = Update-WatchdogBackoff -State $state -Succeeded $true -BaseDelaySeconds 10; "$delay|$($state.ExternalFailures)"; ` +
+    `$delay = Update-WatchdogBackoff -State $state -Succeeded $false -BaseDelaySeconds 10; "$delay|$($state.ExternalFailures)"`;
+
+  assert.deepEqual(powershell(script).split(/\r?\n/), [
+    "10|1",
+    "20|2",
+    "40|3",
+    "60|4",
+    "60|5",
+    "60|6",
+    "10|0",
+    "10|1",
+  ]);
+});
+
+test("RunOnce executes without invoking the sleep action", () => {
+  const escaped = modulePath.replace(/'/g, "''");
+  const script =
+    `Import-Module '${escaped}' -Force; ` +
+    `$global:sleeps = @(); ` +
+    `$sleep = { param($seconds) $global:sleeps += $seconds }; ` +
+    `$runOnceSlept = Invoke-WatchdogSleep -RunOnce -DelaySeconds 60 -SleepAction $sleep; ` +
+    `$continuousSlept = Invoke-WatchdogSleep -DelaySeconds 10 -SleepAction $sleep; ` +
+    `"$runOnceSlept|$continuousSlept|$($global:sleeps -join ',')"`;
+
+  assert.equal(powershell(script), "False|True|10");
 });
 
 test("tunnel cleanup removes only exact owned tunnel logs", () => {
@@ -333,6 +610,7 @@ test("installer describe mode never calls Task Scheduler cmdlets", () => {
   const installerPath = path.join(root, "scripts", "install-codex-status-watchdog.ps1");
   const escapedInstallerPath = installerPath.replace(/'/g, "''");
   const output = runInstallerHarness(`
+function global:Start-Process { throw 'configuration or auth preflight in Describe' }
 function global:Get-ScheduledTask { throw 'scheduler mutation in Describe' }
 function global:New-ScheduledTaskAction { throw 'scheduler mutation in Describe' }
 function global:New-ScheduledTaskTrigger { throw 'scheduler mutation in Describe' }
@@ -456,7 +734,7 @@ $global:registrations | ConvertTo-Json -Compress
   ]);
 });
 
-test("installer stops before registration when configuration check fails", () => {
+test("installer stops before registration with actionable auth guidance when preflight fails", () => {
   const installerPath = path.join(root, "scripts", "install-codex-status-watchdog.ps1");
   const escapedInstallerPath = installerPath.replace(/'/g, "''");
   const output = runInstallerHarness(`
@@ -469,6 +747,8 @@ try { . '${escapedInstallerPath}' } catch { $global:errorMessage = $_.Exception.
   const result = JSON.parse(output);
   assert.deepEqual(result.Events, ["check"]);
   assert.match(result.Error, /configuration check failed with exit code 17/);
+  assert.match(result.Error, /gh auth status/);
+  assert.match(result.Error, /GH_TOKEN/);
 });
 
 test("installer uninstalls only an existing exact task name", () => {

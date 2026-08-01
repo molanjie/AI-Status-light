@@ -51,7 +51,7 @@ else {
   )
   $checkProcess = Start-Process -FilePath $powerShellPath -ArgumentList $checkArguments -Wait -PassThru -WindowStyle Hidden
   if ($checkProcess.ExitCode -ne 0) {
-    throw "Watchdog configuration check failed with exit code $($checkProcess.ExitCode)."
+    throw "Watchdog configuration check failed with exit code $($checkProcess.ExitCode). Verify gh auth status or set a non-empty GH_TOKEN, then retry."
   }
 
   $action = New-ScheduledTaskAction -Execute $powerShellPath -Argument $arguments

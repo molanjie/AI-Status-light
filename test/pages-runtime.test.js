@@ -59,10 +59,10 @@ async function openStatusPage(options = {}) {
   const context = await browser.newContext({ locale: "zh-CN" });
   const page = await context.newPage();
   const pageErrors = [];
-  const requestCounts = { registry: 0, status: 0 };
+  const requestCounts = { registry: 0, status: 0, statusUrls: [] };
 
   await context.addInitScript(
-    ({ appOrigin, fixedNow, snapshotKey, snapshot }) => {
+    ({ appOrigin, fixedNow, registryUrl, snapshotKey, snapshot, stallFirstRegistryFetch }) => {
       if (window.location.origin !== appOrigin) return;
       window.__testNow = fixedNow;
       Date.now = () => window.__testNow;
@@ -76,12 +76,36 @@ async function openStatusPage(options = {}) {
       if (snapshot) {
         window.localStorage.setItem(snapshotKey, JSON.stringify(snapshot));
       }
+      if (stallFirstRegistryFetch) {
+        const originalFetch = window.fetch.bind(window);
+        let shouldStall = true;
+        window.__registryAbortCount = 0;
+        window.fetch = (input, init = {}) => {
+          if (shouldStall && String(input).startsWith(registryUrl)) {
+            shouldStall = false;
+            return new Promise((resolve, reject) => {
+              const rejectOnAbort = () => {
+                window.__registryAbortCount += 1;
+                reject(new DOMException("Registry request aborted", "AbortError"));
+              };
+              if (init.signal && init.signal.aborted) {
+                rejectOnAbort();
+              } else if (init.signal) {
+                init.signal.addEventListener("abort", rejectOnAbort, { once: true });
+              }
+            });
+          }
+          return originalFetch(input, init);
+        };
+      }
     },
     {
       appOrigin: APP_ORIGIN,
       fixedNow: options.now || FIXED_NOW,
+      registryUrl: REGISTRY_URL,
       snapshotKey: SNAPSHOT_KEY,
       snapshot: options.snapshot || null,
+      stallFirstRegistryFetch: options.stallFirstRegistryFetch || false,
     }
   );
 
@@ -114,6 +138,7 @@ async function openStatusPage(options = {}) {
     }
     if (requestUrl.pathname === "/api/status") {
       requestCounts.status += 1;
+      requestCounts.statusUrls.push(route.request().url());
       if (options.onStatusRequest) {
         await options.onStatusRequest(route, requestCounts.status);
       } else {
@@ -125,10 +150,13 @@ async function openStatusPage(options = {}) {
     await route.abort();
   });
 
-  await page.goto(
-    `${APP_ORIGIN}/index.html?api=${encodeURIComponent(STATUS_API_BASE)}`,
-    { waitUntil: "load" }
-  );
+  const explicitBase = Object.hasOwn(options, "explicitBase")
+    ? options.explicitBase
+    : STATUS_API_BASE;
+  const pageUrl = explicitBase
+    ? `${APP_ORIGIN}/index.html?api=${encodeURIComponent(explicitBase)}`
+    : `${APP_ORIGIN}/index.html`;
+  await page.goto(pageUrl, { waitUntil: "load" });
 
   return {
     context,
@@ -332,4 +360,59 @@ test("registry refreshes are serialized so stale responses cannot arrive out of 
     await runtime.page.evaluate(() => registryApiBase),
     newBase
   );
+});
+
+test("a stalled registry request aborts and a later 30-second refresh discovers the endpoint", async (t) => {
+  const newBase = "https://recovered-endpoint.trycloudflare.com";
+  const runtime = await openStatusPage({
+    explicitBase: "",
+    stallFirstRegistryFetch: true,
+    onRegistryRequest(route) {
+      return jsonResponse(route, 200, {
+        schemaVersion: 1,
+        apiBase: newBase,
+        publishedAt: "2026-07-31T12:01:00.000Z",
+      });
+    },
+    onStatusRequest(route) {
+      return jsonResponse(route, 200, validStatus());
+    },
+  });
+  t.after(() => runtime.close());
+
+  await runtime.page.waitForFunction(
+    () => window.__registryAbortCount === 1 && registryRequestInFlight === false,
+    null,
+    { timeout: 5000 }
+  );
+
+  await runtime.page.evaluate(() => {
+    const registryInterval = window.__testIntervals.find(
+      (entry) => entry.delay === REGISTRY_REFRESH_MS
+    );
+    if (!registryInterval) throw new Error("registry interval was not registered");
+    return registryInterval.callback(...registryInterval.args);
+  });
+
+  await runtime.page.waitForFunction(
+    (expected) => registryApiBase === expected,
+    newBase,
+    { timeout: 5000 }
+  );
+  await waitFor(
+    () => runtime.requestCounts.status === 1,
+    "recovered registry did not trigger status polling",
+    5000
+  );
+  await runtime.page.waitForFunction(() => statusRequestInFlight === false);
+  assert.deepEqual(
+    runtime.pageErrors.map((error) => error.message),
+    []
+  );
+  assert.equal(await runtime.page.locator("#status-label").textContent(), "正在处理");
+
+  assert.equal(runtime.requestCounts.registry, 1);
+  assert.equal(runtime.requestCounts.status, 1);
+  assert.equal(new URL(runtime.requestCounts.statusUrls[0]).origin, newBase);
+  assert.equal(await runtime.page.evaluate(() => registryRequestInFlight), false);
 });

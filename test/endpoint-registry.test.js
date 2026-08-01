@@ -3,6 +3,7 @@ const test = require("node:test");
 
 const {
   buildRegistry,
+  getGitHubToken,
   publishEndpoint,
   validateApiBase,
 } = require("../scripts/endpoint-registry");
@@ -125,6 +126,84 @@ test("does not commit when the registered endpoint already matches", async () =>
   assert.equal(calls.length, 2);
 });
 
+test("repairs same-URL registries whose browser-required metadata is invalid", async (t) => {
+  const cases = [
+    {
+      name: "wrong schema",
+      registry: {
+        schemaVersion: 99,
+        apiBase: "https://same.trycloudflare.com",
+        publishedAt: "2026-07-31T12:00:00.000Z",
+      },
+    },
+    {
+      name: "missing schema",
+      registry: {
+        apiBase: "https://same.trycloudflare.com",
+        publishedAt: "2026-07-31T12:00:00.000Z",
+      },
+    },
+    {
+      name: "invalid publication time",
+      registry: {
+        schemaVersion: 1,
+        apiBase: "https://same.trycloudflare.com",
+        publishedAt: "not-a-date",
+      },
+    },
+    {
+      name: "missing publication time",
+      registry: {
+        schemaVersion: 1,
+        apiBase: "https://same.trycloudflare.com",
+      },
+    },
+  ];
+
+  for (const fixture of cases) {
+    await t.test(fixture.name, async () => {
+      const calls = [];
+      const oldContent = Buffer.from(
+        `${JSON.stringify(fixture.registry, null, 2)}\n`,
+        "utf8"
+      ).toString("base64");
+      const replies = [
+        response(200, { object: { sha: "head-sha" } }),
+        response(200, { sha: "file-sha", content: oldContent }),
+        response(200, { content: { sha: "repaired-file-sha" } }),
+      ];
+
+      const result = await publishEndpoint({
+        apiBase: "https://same.trycloudflare.com",
+        token: "test-token",
+        now: () => new Date("2026-07-31T12:30:00.000Z"),
+        fetchImpl: async (url, options) => {
+          calls.push({ url, options });
+          return replies.shift();
+        },
+      });
+
+      assert.deepEqual(result, {
+        changed: true,
+        apiBase: "https://same.trycloudflare.com",
+      });
+      assert.equal(calls.length, 3);
+      assert.equal(calls[2].options.method, "PUT");
+      const requestBody = JSON.parse(calls[2].options.body);
+      assert.equal(requestBody.sha, "file-sha");
+      assert.equal(requestBody.branch, "live-status");
+      assert.deepEqual(
+        JSON.parse(Buffer.from(requestBody.content, "base64").toString("utf8")),
+        {
+          schemaVersion: 1,
+          apiBase: "https://same.trycloudflare.com",
+          publishedAt: "2026-07-31T12:30:00.000Z",
+        }
+      );
+    });
+  }
+});
+
 test("updates only endpoint.json when the registered endpoint changes", async () => {
   const oldRegistry = buildRegistry(
     "https://old.trycloudflare.com",
@@ -245,6 +324,91 @@ test("preserves non-JSON GitHub error body after reading a real Response", async
     (error) => {
       assert.match(error.message, /GitHub GET \/git\/ref\/heads\/live-status failed with 502/);
       assert.match(error.message, /upstream gateway failure/);
+      return true;
+    }
+  );
+});
+
+test("aborts a stalled GitHub request at its per-request deadline", async () => {
+  let observedSignal;
+  const startedAt = Date.now();
+
+  await assert.rejects(
+    publishEndpoint({
+      apiBase: "https://same.trycloudflare.com",
+      token: "test-token",
+      requestTimeoutMs: 30,
+      overallTimeoutMs: 500,
+      fetchImpl: async (url, options) => {
+        observedSignal = options.signal;
+        return new Promise((resolve, reject) => {
+          options.signal.addEventListener(
+            "abort",
+            () => reject(options.signal.reason || new Error("aborted")),
+            { once: true }
+          );
+        });
+      },
+    }),
+    /GitHub GET \/git\/ref\/heads\/live-status timed out/
+  );
+
+  assert.equal(observedSignal.aborted, true);
+  assert.ok(Date.now() - startedAt < 400, "request deadline did not bound the stalled fetch");
+});
+
+test("overall publication deadline preempts a longer request deadline", async () => {
+  const startedAt = Date.now();
+
+  await assert.rejects(
+    publishEndpoint({
+      apiBase: "https://same.trycloudflare.com",
+      token: "test-token",
+      requestTimeoutMs: 500,
+      overallTimeoutMs: 30,
+      fetchImpl: async (url, options) =>
+        new Promise((resolve, reject) => {
+          options.signal.addEventListener(
+            "abort",
+            () => reject(options.signal.reason || new Error("aborted")),
+            { once: true }
+          );
+        }),
+    }),
+    /Endpoint publication timed out/
+  );
+
+  assert.ok(Date.now() - startedAt < 400, "overall deadline did not bound publication");
+});
+
+test("gh token lookup uses a bounded hidden command and sanitizes failures", () => {
+  let invocation;
+  const token = getGitHubToken({
+    env: {},
+    execFileSyncImpl(command, args, options) {
+      invocation = { command, args, options };
+      return "cli-token\n";
+    },
+  });
+
+  assert.equal(token, "cli-token");
+  assert.match(invocation.command, /^gh(?:\.exe)?$/);
+  assert.deepEqual(invocation.args, ["auth", "token"]);
+  assert.equal(invocation.options.encoding, "utf8");
+  assert.equal(invocation.options.windowsHide, true);
+  assert.ok(invocation.options.timeout > 0 && invocation.options.timeout <= 10000);
+
+  assert.throws(
+    () =>
+      getGitHubToken({
+        env: {},
+        execFileSyncImpl() {
+          throw new Error("secret-token command timed out");
+        },
+      }),
+    (error) => {
+      assert.match(error.message, /GitHub authentication token lookup failed or timed out/);
+      assert.doesNotMatch(error.message, /secret-token/);
       return true;
     }
   );

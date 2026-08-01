@@ -5,6 +5,9 @@ const REPO = "AI-Status-light";
 const BRANCH = "live-status";
 const FILE_PATH = "endpoint.json";
 const API_ROOT = `https://api.github.com/repos/${OWNER}/${REPO}`;
+const DEFAULT_REQUEST_TIMEOUT_MS = 8000;
+const DEFAULT_PUBLICATION_TIMEOUT_MS = 30000;
+const GH_TOKEN_TIMEOUT_MS = 5000;
 
 function validateApiBase(value) {
   if (typeof value !== "string" || value.length === 0) {
@@ -77,18 +80,87 @@ function githubMessage(body) {
   return "Unknown GitHub error";
 }
 
-async function request({ method, path, token, fetchImpl, body, allowNotFound = false }) {
-  const response = await fetchImpl(`${API_ROOT}${path}`, {
-    method,
-    headers: {
-      Accept: "application/vnd.github+json",
-      Authorization: `Bearer ${token}`,
-      "Content-Type": "application/json",
-      "X-GitHub-Api-Version": "2022-11-28",
-    },
-    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+function requirePositiveTimeout(value, name) {
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new Error(`${name} must be a positive finite number`);
+  }
+  return Math.floor(value);
+}
+
+async function runWithDeadline(operation, options) {
+  const {
+    label,
+    timeoutMs,
+    overallSignal,
+    overallTimeoutMs,
+  } = options;
+  const controller = new AbortController();
+  let rejectDeadline;
+  const deadlinePromise = new Promise((resolve, reject) => {
+    rejectDeadline = reject;
   });
-  const responseBody = await readResponseBody(response);
+  const abort = (error) => {
+    if (controller.signal.aborted) return;
+    rejectDeadline(error);
+    controller.abort(error);
+  };
+  const timeoutId = setTimeout(() => {
+    abort(new Error(`${label} timed out after ${timeoutMs}ms`));
+  }, timeoutMs);
+  const onOverallAbort = () => {
+    abort(new Error(`Endpoint publication timed out after ${overallTimeoutMs}ms`));
+  };
+
+  if (overallSignal.aborted) {
+    onOverallAbort();
+  } else {
+    overallSignal.addEventListener("abort", onOverallAbort, { once: true });
+  }
+
+  try {
+    return await Promise.race([
+      Promise.resolve().then(() => operation(controller.signal)),
+      deadlinePromise,
+    ]);
+  } finally {
+    clearTimeout(timeoutId);
+    overallSignal.removeEventListener("abort", onOverallAbort);
+  }
+}
+
+async function request({
+  method,
+  path,
+  token,
+  fetchImpl,
+  body,
+  allowNotFound = false,
+  requestTimeoutMs,
+  overallSignal,
+  overallTimeoutMs,
+}) {
+  const { response, responseBody } = await runWithDeadline(
+    async (signal) => {
+      const response = await fetchImpl(`${API_ROOT}${path}`, {
+        method,
+        headers: {
+          Accept: "application/vnd.github+json",
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+          "X-GitHub-Api-Version": "2022-11-28",
+        },
+        signal,
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      });
+      return { response, responseBody: await readResponseBody(response) };
+    },
+    {
+      label: `GitHub ${method} ${path}`,
+      timeoutMs: requestTimeoutMs,
+      overallSignal,
+      overallTimeoutMs,
+    }
+  );
 
   if (response.status === 404 && allowNotFound) {
     return { status: response.status, body: responseBody };
@@ -128,31 +200,38 @@ function decodeRegistry(content) {
     throw new Error(`Invalid ${FILE_PATH}: expected a JSON object`);
   }
 
+  let apiBase;
   try {
-    parsed.apiBase = validateApiBase(parsed.apiBase);
+    apiBase = validateApiBase(parsed.apiBase);
   } catch (error) {
     throw new Error(`Invalid ${FILE_PATH}: ${error.message}`);
   }
 
-  return parsed;
+  const publishedAtIsValid =
+    typeof parsed.publishedAt === "string" &&
+    Number.isFinite(Date.parse(parsed.publishedAt));
+  return {
+    apiBase,
+    publishedAt: parsed.publishedAt,
+    schemaVersion: parsed.schemaVersion,
+    valid: parsed.schemaVersion === 1 && publishedAtIsValid,
+  };
 }
 
-async function createBranch(registry, { token, fetchImpl }) {
+async function createBranch(registry, requestOptions) {
   const blob = await request({
+    ...requestOptions,
     method: "POST",
     path: "/git/blobs",
-    token,
-    fetchImpl,
     body: {
       content: encodeRegistry(registry),
       encoding: "base64",
     },
   });
   const tree = await request({
+    ...requestOptions,
     method: "POST",
     path: "/git/trees",
-    token,
-    fetchImpl,
     body: {
       tree: [
         {
@@ -165,10 +244,9 @@ async function createBranch(registry, { token, fetchImpl }) {
     },
   });
   const commit = await request({
+    ...requestOptions,
     method: "POST",
     path: "/git/commits",
-    token,
-    fetchImpl,
     body: {
       message: "Publish tunnel endpoint",
       tree: tree.body.sha,
@@ -176,10 +254,9 @@ async function createBranch(registry, { token, fetchImpl }) {
     },
   });
   await request({
+    ...requestOptions,
     method: "POST",
     path: "/git/refs",
-    token,
-    fetchImpl,
     body: {
       ref: `refs/heads/${BRANCH}`,
       sha: commit.body.sha,
@@ -187,7 +264,7 @@ async function createBranch(registry, { token, fetchImpl }) {
   });
 }
 
-async function updateEndpoint(registry, file, { token, fetchImpl }) {
+async function updateEndpoint(registry, file, requestOptions) {
   const body = {
     message: "Publish tunnel endpoint",
     content: encodeRegistry(registry),
@@ -198,10 +275,9 @@ async function updateEndpoint(registry, file, { token, fetchImpl }) {
   }
 
   await request({
+    ...requestOptions,
     method: "PUT",
     path: `/contents/${FILE_PATH}`,
-    token,
-    fetchImpl,
     body,
   });
 }
@@ -212,45 +288,70 @@ async function publishEndpoint(options) {
     token,
     now = () => new Date(),
     fetchImpl = globalThis.fetch,
+    requestTimeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
+    overallTimeoutMs = DEFAULT_PUBLICATION_TIMEOUT_MS,
   } = options;
   if (typeof fetchImpl !== "function") {
     throw new Error("fetchImpl must be a function");
   }
 
-  const publishedAt = typeof now === "function" ? now() : now;
-  const registry = buildRegistry(apiBase, publishedAt);
-  const branch = await request({
-    method: "GET",
-    path: `/git/ref/heads/${BRANCH}`,
+  const boundedRequestTimeoutMs = requirePositiveTimeout(
+    requestTimeoutMs,
+    "requestTimeoutMs"
+  );
+  const boundedOverallTimeoutMs = requirePositiveTimeout(
+    overallTimeoutMs,
+    "overallTimeoutMs"
+  );
+  const overallController = new AbortController();
+  const overallTimeoutId = setTimeout(
+    () => overallController.abort(),
+    boundedOverallTimeoutMs
+  );
+  const requestOptions = {
     token,
     fetchImpl,
-    allowNotFound: true,
-  });
+    requestTimeoutMs: boundedRequestTimeoutMs,
+    overallSignal: overallController.signal,
+    overallTimeoutMs: boundedOverallTimeoutMs,
+  };
 
-  if (branch.status === 404) {
-    await createBranch(registry, { token, fetchImpl });
+  try {
+    const publishedAt = typeof now === "function" ? now() : now;
+    const registry = buildRegistry(apiBase, publishedAt);
+    const branch = await request({
+      ...requestOptions,
+      method: "GET",
+      path: `/git/ref/heads/${BRANCH}`,
+      allowNotFound: true,
+    });
+
+    if (branch.status === 404) {
+      await createBranch(registry, requestOptions);
+      return { changed: true, apiBase: registry.apiBase };
+    }
+
+    const file = await request({
+      ...requestOptions,
+      method: "GET",
+      path: `/contents/${FILE_PATH}?ref=${BRANCH}`,
+      allowNotFound: true,
+    });
+    if (file.status === 404) {
+      await updateEndpoint(registry, {}, requestOptions);
+      return { changed: true, apiBase: registry.apiBase };
+    }
+
+    const current = decodeRegistry(file.body.content);
+    if (current.valid && current.apiBase === registry.apiBase) {
+      return { changed: false, apiBase: registry.apiBase };
+    }
+
+    await updateEndpoint(registry, file.body, requestOptions);
     return { changed: true, apiBase: registry.apiBase };
+  } finally {
+    clearTimeout(overallTimeoutId);
   }
-
-  const file = await request({
-    method: "GET",
-    path: `/contents/${FILE_PATH}?ref=${BRANCH}`,
-    token,
-    fetchImpl,
-    allowNotFound: true,
-  });
-  if (file.status === 404) {
-    await updateEndpoint(registry, {}, { token, fetchImpl });
-    return { changed: true, apiBase: registry.apiBase };
-  }
-
-  const current = decodeRegistry(file.body.content);
-  if (current.apiBase === registry.apiBase) {
-    return { changed: false, apiBase: registry.apiBase };
-  }
-
-  await updateEndpoint(registry, file.body, { token, fetchImpl });
-  return { changed: true, apiBase: registry.apiBase };
 }
 
 function resolveGhPath() {
@@ -261,17 +362,38 @@ function cliUsage() {
   return "Usage: node scripts/endpoint-registry.js publish https://name.trycloudflare.com";
 }
 
+function getGitHubToken(options = {}) {
+  const {
+    env = process.env,
+    execFileSyncImpl = execFileSync,
+    timeoutMs = GH_TOKEN_TIMEOUT_MS,
+  } = options;
+  const environmentToken =
+    typeof env.GH_TOKEN === "string" ? env.GH_TOKEN.trim() : "";
+  if (environmentToken) return environmentToken;
+
+  try {
+    const token = String(
+      execFileSyncImpl(resolveGhPath(), ["auth", "token"], {
+        encoding: "utf8",
+        windowsHide: true,
+        timeout: requirePositiveTimeout(timeoutMs, "timeoutMs"),
+      })
+    ).trim();
+    if (token) return token;
+  } catch {}
+
+  throw new Error(
+    "GitHub authentication token lookup failed or timed out. Run gh auth login or set GH_TOKEN."
+  );
+}
+
 async function main(argv = process.argv.slice(2)) {
   if (argv.length !== 2 || argv[0] !== "publish") {
     throw new Error(cliUsage());
   }
 
-  const token =
-    process.env.GH_TOKEN ||
-    execFileSync(resolveGhPath(), ["auth", "token"], {
-      encoding: "utf8",
-      windowsHide: true,
-    }).trim();
+  const token = getGitHubToken();
   const result = await publishEndpoint({ apiBase: argv[1], token });
   process.stdout.write(`${JSON.stringify(result)}\n`);
   return result;
@@ -287,10 +409,14 @@ if (require.main === module) {
 module.exports = {
   API_ROOT,
   BRANCH,
+  DEFAULT_PUBLICATION_TIMEOUT_MS,
+  DEFAULT_REQUEST_TIMEOUT_MS,
   FILE_PATH,
+  GH_TOKEN_TIMEOUT_MS,
   OWNER,
   REPO,
   buildRegistry,
+  getGitHubToken,
   publishEndpoint,
   validateApiBase,
 };

@@ -26,27 +26,8 @@ function Write-WatchdogLog {
   Add-Content -LiteralPath (Join-Path $config.stateDirectory 'watchdog.log') -Value ("{0:u} {1}" -f (Get-Date), $Message)
 }
 
-function Start-OwnedProcess {
-  param(
-    [Parameter(Mandatory = $true)]
-    [string]$FilePath,
-    [Parameter(Mandatory = $true)]
-    [string[]]$Arguments,
-    [Parameter(Mandatory = $true)]
-    [string]$PidFile,
-    [Parameter(Mandatory = $true)]
-    [string]$OutputLog,
-    [Parameter(Mandatory = $true)]
-    [string]$ErrorLog
-  )
-
-  $quotedArguments = @($Arguments | ForEach-Object { '"{0}"' -f $_.Replace('"', '\"') }) -join ' '
-  $process = Start-Process -FilePath $FilePath -ArgumentList $quotedArguments -WorkingDirectory $config.projectRoot -WindowStyle Hidden -RedirectStandardOutput $OutputLog -RedirectStandardError $ErrorLog -PassThru
-  [System.IO.File]::WriteAllText($PidFile, [string]$process.Id, [System.Text.Encoding]::ASCII)
-  return $process
-}
-
 $IntervalSeconds = Get-WatchdogIntervalSeconds -IntervalSeconds $IntervalSeconds
+$publisherTimeoutMilliseconds = 35000
 $mutex = New-Object System.Threading.Mutex($false, 'Local\CodexStatusLightWatchdog')
 $watchdogAction = {
   if (-not (Test-Path -LiteralPath $config.stateDirectory -PathType Container)) {
@@ -65,10 +46,19 @@ $watchdogAction = {
     PublicFailures = 0
     LastPublishedUrl = $null
   }
+  $backoffState = [pscustomobject]@{
+    ExternalFailures = 0
+  }
 
   do {
+    $externalSucceeded = $null
+    $sleepSeconds = $IntervalSeconds
     try {
-      if (-not (Test-HttpEndpoint -Url $config.localHealthUrl -TimeoutSeconds 3)) {
+      $localHealthValid = Test-LocalHealthEndpoint -Url $config.localHealthUrl -TimeoutSeconds 3
+      $ownedServer = Get-OwnedProcessFromPidFile -PidFile $serverPidFile -ExpectedCommandLineFragments $serverFragments
+      $serverDecision = Get-LocalServerGateDecision -LocalHealthValid $localHealthValid -OwnedServer $ownedServer
+
+      if ($serverDecision -eq 'RecoverServer') {
         $replacement = Invoke-OwnedProcessReplacement -StopOwned {
           Stop-OwnedProcessFromPidFile -PidFile $serverPidFile -ExpectedCommandLineFragments $serverFragments
         } -ClearPid {
@@ -76,7 +66,7 @@ $watchdogAction = {
             Remove-Item -LiteralPath $serverPidFile -Force
           }
         } -StartReplacement {
-          Start-OwnedProcess -FilePath $config.nodePath -Arguments @($config.serverPath) -PidFile $serverPidFile -OutputLog $serverOutputLog -ErrorLog $serverErrorLog | Out-Null
+          Start-OwnedProcess -FilePath $config.nodePath -Arguments @($config.serverPath) -WorkingDirectory $config.projectRoot -PidFile $serverPidFile -OutputLog $serverOutputLog -ErrorLog $serverErrorLog | Out-Null
         }
         if ($replacement.TerminationFailed) {
           Write-WatchdogLog ("owned server termination failed: $($replacement.StopResult.Error)")
@@ -88,14 +78,31 @@ $watchdogAction = {
           Write-WatchdogLog 'started owned server'
         }
       }
+      elseif ($serverDecision -eq 'OwnershipConflict') {
+        $retirement = Invoke-OwnedProcessRetirement -StopOwned {
+          Stop-OwnedProcessFromPidFile -PidFile $tunnelPidFile -ExpectedCommandLineFragments $tunnelFragments
+        } -ClearPid {
+          if (Test-Path -LiteralPath $tunnelPidFile -PathType Leaf) {
+            Remove-Item -LiteralPath $tunnelPidFile -Force
+          }
+        }
+        if ($retirement.TerminationFailed) {
+          Write-WatchdogLog ("owned tunnel termination failed during server ownership conflict: $($retirement.StopResult.Error)")
+        }
+        elseif ($retirement.StopResult.Status -eq 'Terminated') {
+          Write-WatchdogLog 'stopped owned tunnel during server ownership conflict'
+        }
+        Write-WatchdogLog 'local health ownership conflict; refusing to adopt, replace, expose, or publish listener'
+      }
       else {
+        $externalSucceeded = $false
         $tunnel = Get-OwnedProcessFromPidFile -PidFile $tunnelPidFile -ExpectedCommandLineFragments $tunnelFragments
         if ($null -eq $tunnel) {
           if (Test-Path -LiteralPath $tunnelPidFile -PathType Leaf) {
             Remove-Item -LiteralPath $tunnelPidFile -Force
           }
           Clear-OwnedTunnelLogs -StateDirectory $config.stateDirectory
-          Start-OwnedProcess -FilePath $config.cloudflaredPath -Arguments @('tunnel', '--url', $config.localTunnelUrl, '--no-autoupdate') -PidFile $tunnelPidFile -OutputLog $tunnelOutputLog -ErrorLog $tunnelErrorLog | Out-Null
+          Start-OwnedProcess -FilePath $config.cloudflaredPath -Arguments @('tunnel', '--url', $config.localTunnelUrl, '--no-autoupdate') -WorkingDirectory $config.projectRoot -PidFile $tunnelPidFile -OutputLog $tunnelOutputLog -ErrorLog $tunnelErrorLog | Out-Null
           Write-WatchdogLog 'started owned tunnel'
         }
 
@@ -105,7 +112,7 @@ $watchdogAction = {
           Write-WatchdogLog 'tunnel URL unavailable'
         }
         else {
-          $publicStatusHealthy = Test-HttpEndpoint -Url ($tunnelUrl + '/api/status') -TimeoutSeconds 5
+          $publicStatusHealthy = Test-PublicStatusEndpoint -Url ($tunnelUrl + '/api/status') -TimeoutSeconds 5
           if (-not $publicStatusHealthy) {
             Write-WatchdogLog 'public status check failed'
           }
@@ -113,9 +120,14 @@ $watchdogAction = {
 
         $transition = Invoke-PublicStatusTransition -State $publicState -TunnelUrl $tunnelUrl -PublicStatusHealthy $publicStatusHealthy -PublishTunnel {
           param($publishUrl)
-          & $config.nodePath $config.publisherPath publish $publishUrl | Out-Null
-          if ($LASTEXITCODE -ne 0) {
-            Write-WatchdogLog ("endpoint publisher failed with exit code $LASTEXITCODE")
+          $publishResult = Invoke-EndpointPublisherProcess `
+            -NodePath $config.nodePath `
+            -PublisherPath $config.publisherPath `
+            -TunnelUrl $publishUrl `
+            -WorkingDirectory $config.projectRoot `
+            -TimeoutMilliseconds $publisherTimeoutMilliseconds
+          if (-not $publishResult.Succeeded) {
+            Write-WatchdogLog ("endpoint publisher failed: $($publishResult.Status)")
             return $false
           }
           return $true
@@ -137,9 +149,13 @@ $watchdogAction = {
           return $true
         }
         $publicState = $transition.State
+        $externalSucceeded = $publicStatusHealthy -and (
+          -not $transition.PublicationAttempted -or $transition.PublicationSucceeded
+        )
 
         if ($transition.RotationRequested) {
           Write-WatchdogLog 'rotated owned tunnel after three public failures'
+          $externalSucceeded = $true
         }
         if ($transition.RotationFailed) {
           Write-WatchdogLog 'owned tunnel rotation failed; preserving PID and failure state'
@@ -153,9 +169,13 @@ $watchdogAction = {
       Write-WatchdogLog ("watchdog iteration failed: {0}" -f $_.Exception.Message)
     }
 
-    if (-not $RunOnce) {
-      Start-Sleep -Seconds $IntervalSeconds
+    if ($null -ne $externalSucceeded) {
+      $sleepSeconds = Update-WatchdogBackoff `
+        -State $backoffState `
+        -Succeeded ([bool]$externalSucceeded) `
+        -BaseDelaySeconds $IntervalSeconds
     }
+    Invoke-WatchdogSleep -RunOnce:$RunOnce -DelaySeconds $sleepSeconds | Out-Null
   } while (-not $RunOnce)
 }
 
