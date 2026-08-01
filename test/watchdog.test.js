@@ -773,6 +773,7 @@ function global:New-ScheduledTaskSettingsSet { throw 'scheduler mutation in Desc
 function global:New-ScheduledTaskPrincipal { throw 'scheduler mutation in Describe' }
 function global:Register-ScheduledTask { throw 'scheduler mutation in Describe' }
 function global:Start-ScheduledTask { throw 'scheduler mutation in Describe' }
+function global:Stop-ScheduledTask { throw 'scheduler mutation in Describe' }
 function global:Unregister-ScheduledTask { throw 'scheduler mutation in Describe' }
 . '${escapedInstallerPath}' -Describe
 `);
@@ -783,11 +784,16 @@ function global:Unregister-ScheduledTask { throw 'scheduler mutation in Describe
   assert.equal(descriptor.multipleInstances, "IgnoreNew");
 });
 
-test("installer registers the exact task descriptor after configuration check", () => {
+test("installer replaces the old task instance and confirms a fresh heartbeat", (t) => {
   const installerPath = path.join(root, "scripts", "install-codex-status-watchdog.ps1");
   const escapedInstallerPath = installerPath.replace(/'/g, "''");
+  const stateRoot = fs.mkdtempSync(path.join(os.tmpdir(), "codex-status-installer-live-"));
+  t.after(() => fs.rmSync(stateRoot, { recursive: true, force: true }));
+  const escapedStateRoot = stateRoot.replace(/'/g, "''");
   const output = runInstallerHarness(`
+$env:LOCALAPPDATA = '${escapedStateRoot}'
 $global:events = @()
+$global:taskState = 'Running'
 function global:Start-Process {
   param([string]$FilePath, [string[]]$ArgumentList, [switch]$Wait, [switch]$PassThru, [string]$WindowStyle)
   $global:events += 'check'
@@ -862,17 +868,30 @@ function global:Start-ScheduledTask {
   param([string]$TaskName)
   $global:events += 'start'
   $global:startTaskName = $TaskName
+  $global:taskState = 'Running'
+  $stateDirectory = Join-Path $env:LOCALAPPDATA 'CodexStatusLight'
+  New-Item -ItemType Directory -Path $stateDirectory -Force | Out-Null
+  [IO.File]::WriteAllText(
+    (Join-Path $stateDirectory 'watchdog.heartbeat'),
+    [string]([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() + 1000),
+    [Text.Encoding]::ASCII
+  )
+}
+function global:Stop-ScheduledTask {
+  param([string]$TaskName)
+  $global:events += 'stop'
+  $global:taskState = 'Ready'
 }
 function global:Start-Sleep { param([int]$Milliseconds) }
 function global:Get-ScheduledTask {
   param([string]$TaskName, [string]$ErrorAction)
-  [pscustomobject]@{ TaskName = $TaskName; State = 'Running' }
+  [pscustomobject]@{ TaskName = $TaskName; State = $global:taskState }
 }
 . '${escapedInstallerPath}' -StartNow
 [ordered]@{ Events = $global:events; Check = $global:check; Registration = $global:registration; StartTaskName = $global:startTaskName } | ConvertTo-Json -Compress -Depth 8
 `);
   const result = JSON.parse(output);
-  assert.deepEqual(result.Events, ["check", "action", "trigger:logon", "trigger:rescue", "settings", "principal", "register", "start"]);
+  assert.deepEqual(result.Events, ["check", "stop", "action", "trigger:logon", "trigger:rescue", "settings", "principal", "register", "start"]);
   assert.equal(result.Check.Arguments[result.Check.Arguments.length - 1], "-CheckConfiguration");
   assert.equal(result.Check.Wait, true);
   assert.equal(result.Check.PassThru, true);
@@ -897,24 +916,30 @@ function global:Get-ScheduledTask {
   assert.equal(result.StartTaskName, "CodexStatusLightWatchdog");
 });
 
-test("installer fails StartNow when the task never remains running", () => {
+test("installer fails StartNow without a fresh watchdog heartbeat", (t) => {
   const installerPath = path.join(root, "scripts", "install-codex-status-watchdog.ps1");
   const escapedInstallerPath = installerPath.replace(/'/g, "''");
+  const stateRoot = fs.mkdtempSync(path.join(os.tmpdir(), "codex-status-installer-stale-"));
+  t.after(() => fs.rmSync(stateRoot, { recursive: true, force: true }));
+  const escapedStateRoot = stateRoot.replace(/'/g, "''");
   const output = runInstallerHarness(`
+$env:LOCALAPPDATA = '${escapedStateRoot}'
+$global:taskState = 'Ready'
 function global:Start-Process { param([string]$FilePath, [string[]]$ArgumentList, [switch]$Wait, [switch]$PassThru, [string]$WindowStyle) [pscustomobject]@{ ExitCode = 0 } }
 function global:New-ScheduledTaskAction { param([string]$Execute, [string]$Argument) [pscustomobject]@{} }
 function global:New-ScheduledTaskTrigger { param([switch]$AtLogOn, [string]$User, [switch]$Once, [DateTime]$At, [TimeSpan]$RepetitionInterval) [pscustomobject]@{} }
 function global:New-ScheduledTaskSettingsSet { param([switch]$AllowStartIfOnBatteries, [switch]$DontStopIfGoingOnBatteries, [TimeSpan]$RestartInterval, [int]$RestartCount, [TimeSpan]$ExecutionTimeLimit, [string]$MultipleInstances) [pscustomobject]@{} }
 function global:New-ScheduledTaskPrincipal { param([string]$UserId, [string]$LogonType, [string]$RunLevel) [pscustomobject]@{} }
 function global:Register-ScheduledTask { param([string]$TaskName, $Action, $Trigger, $Settings, $Principal, [switch]$Force) }
-function global:Start-ScheduledTask { param([string]$TaskName) }
+function global:Start-ScheduledTask { param([string]$TaskName) $global:taskState = 'Running' }
+function global:Stop-ScheduledTask { throw 'ready task must not be stopped' }
 function global:Start-Sleep { param([int]$Milliseconds) }
-function global:Get-ScheduledTask { param([string]$TaskName, [string]$ErrorAction) [pscustomobject]@{ TaskName = $TaskName; State = 'Ready' } }
+function global:Get-ScheduledTask { param([string]$TaskName, [string]$ErrorAction) [pscustomobject]@{ TaskName = $TaskName; State = $global:taskState } }
 try { . '${escapedInstallerPath}' -StartNow } catch { $global:errorMessage = $_.Exception.Message }
 [ordered]@{ Error = $global:errorMessage } | ConvertTo-Json -Compress
 `);
   const result = JSON.parse(output);
-  assert.match(result.Error, /did not remain Running/);
+  assert.match(result.Error, /fresh heartbeat/);
 });
 
 test("installer uses Force for repeated registrations without creating another task name", () => {

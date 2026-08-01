@@ -42,6 +42,7 @@ $watchdogAction = {
   $serverErrorLog = Join-Path $config.stateDirectory 'server.err.log'
   $tunnelOutputLog = Join-Path $config.stateDirectory 'tunnel.out.log'
   $tunnelErrorLog = Join-Path $config.stateDirectory 'tunnel.err.log'
+  $heartbeatPath = Join-Path $config.stateDirectory 'watchdog.heartbeat'
   $serverFragments = @($config.nodePath, $config.serverPath)
   $tunnelFragments = @($config.cloudflaredPath, 'tunnel', '--url', $config.localTunnelUrl, '--no-autoupdate')
   $publicState = [pscustomobject]@{
@@ -56,6 +57,8 @@ $watchdogAction = {
     $externalSucceeded = $null
     $sleepSeconds = $IntervalSeconds
     try {
+      $heartbeat = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds().ToString([Globalization.CultureInfo]::InvariantCulture)
+      [System.IO.File]::WriteAllText($heartbeatPath, $heartbeat, [System.Text.Encoding]::ASCII)
       $localHealthValid = Test-LocalHealthEndpoint -Url $config.localHealthUrl -TimeoutSeconds 3
       $ownedServer = Get-OwnedProcessFromPidFile -PidFile $serverPidFile -ExpectedCommandLineFragments $serverFragments
       $serverDecision = Get-LocalServerGateDecision -LocalHealthValid $localHealthValid -OwnedServer $ownedServer
