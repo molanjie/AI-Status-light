@@ -6,6 +6,7 @@ const { DatabaseSync } = require("node:sqlite");
 
 const CODEX_HOME = path.join(process.env.USERPROFILE || process.env.HOME || "", ".codex");
 const ACTIVE_STALE_MS = 30 * 60 * 1000;
+const WAITING_STALE_MS = 5 * 60 * 1000;
 const COMPLETED_WINDOW_MS = 10 * 1000;
 const RECENT_THREAD_MS = 24 * 60 * 60 * 1000;
 const MAX_INITIAL_READ = 32 * 1024 * 1024;
@@ -140,6 +141,11 @@ function applySubscriptionRenewalDate(planInfo, renewalDate) {
     return planInfo;
   }
 
+  const tokenActiveUntil = Date.parse(planInfo.activeUntil || "");
+  if (Number.isFinite(tokenActiveUntil) && parsedAt <= tokenActiveUntil) {
+    return planInfo;
+  }
+
   return {
     ...planInfo,
     activeUntil: null,
@@ -166,7 +172,11 @@ function getPlanInfo() {
 }
 
 function parseEventLine(line, state) {
-  if (!line.includes('"task_started"') && !line.includes('"task_complete"')) return;
+  const isTaskEvent = line.includes('"task_started"') || line.includes('"task_complete"');
+  const isInputRequest = line.includes('"request_user_input"');
+  const isInputResponse = state.waiting && line.includes('"function_call_output"') &&
+    (!state.waitingCallId || line.includes(state.waitingCallId));
+  if (!isTaskEvent && !isInputRequest && !isInputResponse) return;
 
   try {
     const event = JSON.parse(line);
@@ -177,10 +187,25 @@ function parseEventLine(line, state) {
       state.active = true;
       state.turnId = event.payload.turn_id || "";
       state.lastStartedAt = eventTime;
+      state.waiting = false;
+      state.waitingCallId = "";
+      state.waitingAt = 0;
     } else if (type === "task_complete") {
       state.active = false;
       state.turnId = "";
       state.lastCompletedAt = eventTime;
+      state.waiting = false;
+      state.waitingCallId = "";
+      state.waitingAt = 0;
+    } else if (type === "function_call" && event.payload.name === "request_user_input") {
+      state.waiting = true;
+      state.waitingCallId = event.payload.call_id || "";
+      state.waitingAt = eventTime;
+    } else if (type === "function_call_output" && state.waiting &&
+      (!state.waitingCallId || event.payload.call_id === state.waitingCallId)) {
+      state.waiting = false;
+      state.waitingCallId = "";
+      state.waitingAt = 0;
     }
   } catch {
     // A partially written final JSONL line will be picked up on the next poll.
@@ -200,6 +225,9 @@ function updateRolloutState(thread) {
       turnId: "",
       lastStartedAt: 0,
       lastCompletedAt: 0,
+      waiting: false,
+      waitingCallId: "",
+      waitingAt: 0,
     };
   }
 
@@ -226,9 +254,11 @@ function updateRolloutState(thread) {
   }
 
   rolloutCache.set(filePath, cached);
+  const now = Date.now();
   return {
     title: normalizeTitle(thread.title),
-    active: cached.active && Date.now() - Math.max(cached.lastStartedAt, stat.mtimeMs) < ACTIVE_STALE_MS,
+    active: cached.active && now - Math.max(cached.lastStartedAt, stat.mtimeMs) < ACTIVE_STALE_MS,
+    waiting: cached.waiting && now - cached.waitingAt < WAITING_STALE_MS,
     lastStartedAt: cached.lastStartedAt,
     lastCompletedAt: cached.lastCompletedAt,
     updatedAt: stat.mtimeMs,
@@ -312,15 +342,15 @@ function buildCodexStatus(running, threads, totalThreads, now = Date.now()) {
     updatedAt: Math.max(thread.lastStartedAt, thread.lastCompletedAt, thread.updatedAt),
   });
 
-  if (activeSessions.length > 0) {
-    const sessions = activeSessions
-      .map((thread) => toPublicSession(thread, "processing"))
+  if (waitingSessions.length > 0) {
+    const sessions = waitingSessions
+      .map((thread) => toPublicSession(thread, "waiting"))
       .sort((a, b) => b.updatedAt - a.updatedAt);
     return {
       source: "codex-local",
-      state: "processing",
-      light: "red",
-      label: "正在处理",
+      state: "waiting",
+      light: "yellow",
+      label: "等待输入",
       sessionCount: sessions.length,
       sessions,
       totalThreads,
@@ -331,15 +361,15 @@ function buildCodexStatus(running, threads, totalThreads, now = Date.now()) {
     };
   }
 
-  if (waitingSessions.length > 0) {
-    const sessions = waitingSessions
-      .map((thread) => toPublicSession(thread, "waiting"))
+  if (activeSessions.length > 0) {
+    const sessions = activeSessions
+      .map((thread) => toPublicSession(thread, "processing"))
       .sort((a, b) => b.updatedAt - a.updatedAt);
     return {
       source: "codex-local",
-      state: "waiting",
-      light: "yellow",
-      label: "等待输入",
+      state: "processing",
+      light: "red",
+      label: "正在处理",
       sessionCount: sessions.length,
       sessions,
       totalThreads,
@@ -439,5 +469,6 @@ module.exports = {
   buildCodexStatus,
   findLatestStateDatabase,
   normalizePlanInfo,
+  parseEventLine,
   readCodexStatus,
 };

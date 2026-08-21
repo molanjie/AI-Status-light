@@ -1,7 +1,12 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
 
-const { applySubscriptionRenewalDate, normalizePlanInfo } = require("../codex-status");
+const {
+  applySubscriptionRenewalDate,
+  buildCodexStatus,
+  normalizePlanInfo,
+  parseEventLine,
+} = require("../codex-status");
 
 test("does not report an expired Plus subscription from a pre-refresh expiry claim", () => {
   assert.equal(
@@ -72,4 +77,67 @@ test("uses the confirmed billing renewal date instead of stale token metadata", 
   assert.equal(result.renewalDateOnly, true);
   assert.equal(result.subscriptionStatus, "active");
   assert.equal(result.subscriptionSource, "billing");
+});
+
+test("does not let a stale billing date override a newer active token subscription", () => {
+  const result = applySubscriptionRenewalDate(
+    {
+      plan: "plus",
+      activeUntil: "2026-09-12T03:30:45+00:00",
+      subscriptionStatus: "active",
+    },
+    "2026-08-12"
+  );
+
+  assert.equal(result.activeUntil, "2026-09-12T03:30:45+00:00");
+  assert.equal(result.renewalDate, undefined);
+  assert.equal(result.subscriptionSource, undefined);
+});
+
+test("tracks request_user_input until its matching response arrives", () => {
+  assert.equal(typeof parseEventLine, "function");
+  if (typeof parseEventLine !== "function") return;
+
+  const state = { active: true, waiting: false, waitingCallId: "", waitingAt: 0 };
+  parseEventLine(JSON.stringify({
+    timestamp: "2026-08-22T00:00:00Z",
+    type: "response_item",
+    payload: {
+      type: "function_call",
+      name: "request_user_input",
+      call_id: "call_waiting",
+    },
+  }), state);
+
+  assert.equal(state.waiting, true);
+  assert.equal(state.waitingCallId, "call_waiting");
+
+  parseEventLine(JSON.stringify({
+    timestamp: "2026-08-22T00:00:05Z",
+    type: "response_item",
+    payload: {
+      type: "function_call_output",
+      call_id: "call_waiting",
+    },
+  }), state);
+
+  assert.equal(state.waiting, false);
+  assert.equal(state.waitingCallId, "");
+});
+
+test("explicit waiting input takes priority over an active task", () => {
+  const now = Date.parse("2026-08-22T00:00:10Z");
+  const result = buildCodexStatus(true, [{
+    title: "Need confirmation",
+    active: true,
+    waiting: true,
+    lastStartedAt: now - 10000,
+    lastCompletedAt: 0,
+    updatedAt: now,
+  }], 1, now);
+
+  assert.equal(result.state, "waiting");
+  assert.equal(result.light, "yellow");
+  assert.equal(result.label, "等待输入");
+  assert.equal(result.sessions[0].state, "waiting");
 });

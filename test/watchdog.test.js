@@ -732,7 +732,7 @@ test("server recovery retains ownership and suppresses replacement after termina
   }
 });
 
-test("installer describes the exact current-user task without mutating Task Scheduler", () => {
+test("installer describes the exact current-user hidden task without mutating Task Scheduler", () => {
   const installerPath = path.join(
     root,
     "scripts",
@@ -758,6 +758,7 @@ test("installer describes the exact current-user task without mutating Task Sche
   assert.equal(descriptor.multipleInstances, "IgnoreNew");
   assert.equal(descriptor.restartIntervalMinutes, 1);
   assert.equal(descriptor.restartCount, 999);
+  assert.match(descriptor.arguments, /(?:^|\s)-WindowStyle\s+Hidden(?:\s|$)/i);
   assert.match(descriptor.arguments, /codex-status-watchdog\.ps1/);
 });
 
@@ -898,7 +899,7 @@ function global:Get-ScheduledTask {
   assert.equal(result.Registration.TaskName, "CodexStatusLightWatchdog");
   assert.equal(result.Registration.Force, true);
   assert.match(result.Registration.Execute.toLowerCase(), /powershell\.exe$/);
-  assert.equal(result.Registration.Argument, `-NoProfile -ExecutionPolicy Bypass -File "${path.join(root, "scripts", "codex-status-watchdog.ps1")}"`);
+  assert.equal(result.Registration.Argument, `-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "${path.join(root, "scripts", "codex-status-watchdog.ps1")}"`);
   assert.equal(result.Registration.Trigger.length, 2);
   assert.equal(result.Registration.Trigger[0].Kind, "AtLogOn");
   assert.equal(result.Registration.Trigger[0].User, process.env.USERNAME);

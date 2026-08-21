@@ -19,7 +19,7 @@ $powerShellPath = $powerShellCommand.Source
 if ([string]::IsNullOrWhiteSpace($powerShellPath)) {
   $powerShellPath = $powerShellCommand.Path
 }
-$arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$watchdogPath`""
+$arguments = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$watchdogPath`""
 $stateDirectory = Join-Path $env:LOCALAPPDATA 'CodexStatusLight'
 $heartbeatPath = Join-Path $stateDirectory 'watchdog.heartbeat'
 
