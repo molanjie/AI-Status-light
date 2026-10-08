@@ -33,6 +33,11 @@
       if (normalized && !result.includes(normalized)) result.push(normalized);
     }
     add(options.explicitBase);
+    try {
+      const page = new URL(options.pageOrigin);
+      if ((page.protocol === "http:" || page.protocol === "https:") &&
+          ["localhost", "127.0.0.1", "[::1]"].includes(page.hostname)) add(page.origin);
+    } catch (error) {}
     add(options.registryBase);
     add(options.storedBase);
     if (options.isFile) add("http://127.0.0.1:3456");

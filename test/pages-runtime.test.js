@@ -190,6 +190,32 @@ function validStatus(overrides = {}) {
   };
 }
 
+test("refreshes session data without restarting an unchanged carousel", async t => {
+  const runtime = await openStatusPage();
+  t.after(() => runtime.close());
+  const result = await runtime.page.evaluate(() => {
+    updateSessions([{ title: "Same title", state: "processing", updatedAt: 1 }]);
+    updateSessions([{ title: "Same title", state: "processing", updatedAt: 2 }]);
+    return currentSessions[0].updatedAt;
+  });
+  assert.equal(result, 2);
+});
+
+test("renders account text literally and clears usage fields when new data is absent", async t => {
+  const runtime = await openStatusPage();
+  t.after(() => runtime.close());
+  await runtime.page.evaluate(status => renderUsage(status), validStatus({
+    plan: { plan: "plus", name: '<img src="x" onerror="window.injected=true">', activeUntil: "2026-08-12T03:30:45Z" },
+  }));
+  assert.equal(await runtime.page.locator("#plan-sub-info img").count(), 0);
+  assert.match(await runtime.page.locator("#plan-sub-info").textContent(), /<img/);
+  await runtime.page.evaluate(() => renderUsage({ tokenStats: null, plan: { plan: "plus" } }));
+  assert.equal(await runtime.page.locator("#token-24h").textContent(), "—");
+  assert.equal(await runtime.page.locator("#model-bars").textContent(), "");
+  await runtime.page.evaluate(() => renderUsage({ plan: null, tokenStats: { totalTokens: 10, tokens24h: 2, byModel: [] } }));
+  assert.equal(await runtime.page.locator("#plan-badge").textContent(), "");
+});
+
 test("cached snapshot restoration cannot abort registry refresh or status polling", async (t) => {
   const cached = validStatus({
     state: "idle",

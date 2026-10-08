@@ -1,38 +1,63 @@
-# Claude 红绿灯 + Mac系统信息展示
+# Codex Status Light
 
-[Flutter移动端](./iapp)
-[后端](./iapp/server)
-[控制台](./iapp/server/src//client/)
-[数据采集](./macmon) 基于最新的https://github.com/vladkens/macmon 修改添加了风扇统计
+A local Codex status collector with a responsive traffic-light dashboard.
 
-## 效果展示
+Live dashboard: https://molanjie.github.io/AI-Status-light/
 
-<video src="https://github.com/taoya7/mini-watch/raw/master/assets/1.mp4" controls muted width="320"></video>
+## Run Locally
 
-<video src="https://github.com/taoya7/mini-watch/raw/master/assets/2.mp4" controls muted width="320"></video>
+Use Node.js 24 or later with `node:sqlite` support.
 
-## 基础环境
-
-```shell
-❯ flutter --version
-Flutter 3.41.6 • channel stable • https://github.com/flutter/flutter.git
-Framework • revision db50e20168 (9 weeks ago) • 2026-03-25 16:21:00 -0700
-Engine • hash 5cdd32777948fa7a648fac915f8da7120ac7e97a (revision 425cfb54d0) (2 months
-ago) • 2026-03-25 20:14:42.000Z
-Tools • Dart 3.11.4 • DevTools 2.54.2
+```powershell
+npm install
+npm start
 ```
 
-```shell
-❯ node -v                                   
-v25.8.0
+Open http://127.0.0.1:3456. The collector reads the newest
+`~/.codex/state_*.sqlite`, session JSONL files, and subscription dates from
+`~/.codex/auth.json`. It does not make OpenAI API requests.
+
+## Status Meaning
+
+- Red: at least one task is processing.
+- Yellow: tasks need user input, initial synchronization, or lost connectivity.
+- Green: completed for 10 seconds, then idle.
+- Flashing red: status reading failed.
+
+The session list retains both processing and waiting tasks. Subscription
+dates refresh from local login data; stale dates wait for synchronization
+instead of claiming a renewal. An optional future `SUBSCRIPTION_RENEWAL_DATE`
+in `.env` is a date-only fallback and cannot override a newer token date.
+
+Token totals come from Codex's local thread counters. The recent-dialogue
+metric sums lifetime tokens for dialogues updated in the last 24 hours;
+it is not a count of tokens newly consumed within 24 hours or a quota estimate.
+
+## Background Service
+
+Authenticate GitHub CLI with `gh auth login`. Install the watchdog from
+the stable project directory:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/install-codex-status-watchdog.ps1 -StartNow
 ```
 
-```shell
-❯ pm2 -v       
-5.2.0
+The hidden scheduled task supervises the local server and Cloudflare Quick
+Tunnel. It publishes the current endpoint to the `live-status` branch.
+GitHub Pages serves `docs`; the computer and watchdog must run for live data.
+
+Runtime logs and PID claims are in `%LOCALAPPDATA%\CodexStatusLight`.
+If a claim is corrupt, retain a backup and verify the listener and process
+ownership before repairing it. Never blindly kill a PID from a damaged file.
+
+## Verify And Publish
+
+```powershell
+npm run build:pages
+npm test
+node scripts/verify-live-page.js
 ```
 
-```shell
-❯ rustc --version
-rustc 1.91.1 (ed61e7d7e 2025-11-07) (Homebrew)
-```
+Edit `public` and synchronize `docs` with `build:pages` before publishing.
+The live verifier checks cached offline status, recovery without reloading,
+and 320px, 390px, and desktop widths.

@@ -3,7 +3,7 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Codex 状态灯</title>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -11,7 +11,7 @@
     min-height: 100vh;
     padding: 24px 14px 32px;
     display: flex;
-    align-items: center;
+    align-items: flex-start;
     justify-content: center;
     color: #f4f7f8;
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
@@ -495,9 +495,12 @@
     margin-top: 10px;
     padding-top: 8px;
     border-top: 1px solid rgba(255,255,255,0.04);
-    color: #4e575c;
-    font-size: 10px;
+    color: #a0abb0;
+    font-size: 12px;
     display: flex;
+    flex-wrap: wrap;
+    gap: 6px 12px;
+    overflow-wrap: anywhere;
     justify-content: space-between;
   }
   /* Quota windows */
@@ -664,6 +667,8 @@
   /* Footer info bar */
   .footer-info {
     display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
     align-items: center;
     gap: 16px;
     color: #3a4145;
@@ -977,7 +982,7 @@
     </div>
     <div class="usage-tokens">
       <span class="token-big" id="token-24h">0</span>
-      <span class="token-label">tokens (24h)</span>
+      <span class="token-label" title="最近24小时更新过的对话累计用量">tokens · 近期对话累计</span>
     </div>
     <div class="usage-sub" id="token-total"></div>
     <div class="model-bars" id="model-bars"></div>
@@ -1087,6 +1092,8 @@ function updateSessions(sessions) {
       carouselIndex = (carouselIndex + 1) % currentSessions.length;
       renderSessionTitle();
     }, 4000) : null;
+  } else {
+    currentSessions = nextSessions;
   }
 }
 
@@ -1160,6 +1167,7 @@ function getStatusApiBases() {
     registryBase: registryApiBase,
     storedBase: storedBase,
     isFile: window.location.protocol === "file:",
+    pageOrigin: window.location.origin,
   });
 }
 
@@ -1429,27 +1437,36 @@ function renderPlanCountdown() {
       : null;
     var renewalLabel = "下次续订日 " + plan.renewalDate;
     if (remainingDays !== null) renewalLabel += " · 距续订日约 " + remainingDays + " 天";
-    info.innerHTML = "<span>" + name + "</span><span>" + renewalLabel + "</span>";
+    setPlanText(name, renewalAt > Date.now() ? renewalLabel : "续订时间待同步");
     return;
   }
   if (plan.subscriptionStatus === "renewal_pending") {
     var refreshedAt = plan.refreshedAt ? new Date(plan.refreshedAt).toLocaleString() : "";
     var pendingLabel = "续订时间待同步" + (refreshedAt ? "（上次核对 " + refreshedAt + "）" : "");
-    info.innerHTML = "<span>" + name + "</span><span>" + pendingLabel + "</span>";
+    setPlanText(name, pendingLabel);
     return;
   }
   if (!plan.activeUntil) {
-    info.innerHTML = "<span>" + name + "</span><span>订阅时间未知</span>";
+    setPlanText(name, "订阅时间未知");
     return;
   }
   var until = new Date(plan.activeUntil).getTime();
   if (!Number.isFinite(until)) {
-    info.innerHTML = "<span>" + name + "</span><span>订阅时间未知</span>";
+    setPlanText(name, "订阅时间未知");
     return;
   }
   var diff = until - Date.now();
-  var label = diff > 0 ? "订阅剩余 " + formatDuration(diff) : "订阅已到期";
-  info.innerHTML = "<span>" + name + "</span><span>" + label + "</span>";
+  var label = diff > 0 ? "订阅剩余 " + formatDuration(diff) : "续订时间待同步";
+  setPlanText(name, label);
+}
+
+function setPlanText(name, label) {
+  var info = el("plan-sub-info");
+  if (info.children.length !== 2) {
+    info.replaceChildren(document.createElement("span"), document.createElement("span"));
+  }
+  info.children[0].textContent = name;
+  info.children[1].textContent = label;
 }
 
 function renderUsage(data) {
@@ -1466,6 +1483,9 @@ function renderUsage(data) {
     var planName = (plan.plan || "unknown").toUpperCase();
     badge.textContent = planName;
     badge.className = "plan-badge " + (plan.plan || "free");
+  } else {
+    el("plan-badge").textContent = "";
+    el("plan-badge").className = "plan-badge";
   }
 
   // Token stats
@@ -1502,6 +1522,10 @@ function renderUsage(data) {
         bars.appendChild(row);
       }
     }
+  } else {
+    el("token-24h").textContent = "—";
+    el("token-total").textContent = "用量暂不可用";
+    el("model-bars").replaceChildren();
   }
 
   // Quota windows
@@ -1584,8 +1608,10 @@ renderPlanCountdown();
   var canvas = document.getElementById("particles");
   var ctx = canvas.getContext("2d");
   var particles = [];
-  var count = 60;
+  var count = window.innerWidth < 640 ? 30 : 60;
   var w, h;
+  var motionPreference = window.matchMedia("(prefers-reduced-motion: reduce)");
+  var animationFrame = null;
 
   var stateColors = {
     idle:       { r: 48, g: 209, b: 88 },
@@ -1627,6 +1653,8 @@ renderPlanCountdown();
   function lerp(a, b, t) { return a + (b - a) * t; }
 
   function draw(t) {
+    animationFrame = null;
+    if (document.hidden || motionPreference.matches) return;
     ctx.clearRect(0, 0, w, h);
     currentColor.r = lerp(currentColor.r, targetColor.r, 0.02);
     currentColor.g = lerp(currentColor.g, targetColor.g, 0.02);
@@ -1649,9 +1677,20 @@ renderPlanCountdown();
         Math.round(currentColor.b) + "," + alpha + ")";
       ctx.fill();
     }
-    requestAnimationFrame(draw);
+    animationFrame = requestAnimationFrame(draw);
   }
-  requestAnimationFrame(draw);
+  function updateAnimation() {
+    if (animationFrame !== null) cancelAnimationFrame(animationFrame);
+    animationFrame = null;
+    if (!document.hidden && !motionPreference.matches) {
+      animationFrame = requestAnimationFrame(draw);
+    } else {
+      ctx.clearRect(0, 0, w, h);
+    }
+  }
+  document.addEventListener("visibilitychange", updateAnimation);
+  motionPreference.addEventListener("change", updateAnimation);
+  updateAnimation();
 })();
 
 // ─── Traffic Light Capsule ───────────────────────────────────────────

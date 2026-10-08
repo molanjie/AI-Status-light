@@ -3,6 +3,7 @@ const path = require("path");
 const os = require("os");
 const { execFileSync } = require("child_process");
 const { DatabaseSync } = require("node:sqlite");
+const { StringDecoder } = require("node:string_decoder");
 
 const CODEX_HOME = path.join(process.env.USERPROFILE || process.env.HOME || "", ".codex");
 const ACTIVE_STALE_MS = 30 * 60 * 1000;
@@ -52,7 +53,6 @@ function getRecentThreads(databasePath) {
       FROM threads
       WHERE archived = 0 AND MAX(recency_at_ms, updated_at_ms) >= ?
       ORDER BY MAX(recency_at_ms, updated_at_ms) DESC
-      LIMIT 30
     `).all(Date.now() - RECENT_THREAD_MS);
   } finally {
     db.close();
@@ -73,30 +73,6 @@ function getTokenStats(databasePath) {
       "SELECT model, SUM(tokens_used) as t FROM threads WHERE archived=0 AND tokens_used>0 GROUP BY model ORDER BY t DESC"
     ).all();
 
-    // 5-hour rolling window
-    const h5rows = db.prepare(
-      "SELECT tokens_used, updated_at_ms FROM threads WHERE archived=0 AND tokens_used>0 AND updated_at_ms>=? ORDER BY updated_at_ms ASC"
-    ).all(now - 5 * 3600000);
-    let h5total = 0, h5oldest = Infinity;
-    for (const r of h5rows) { h5total += r.tokens_used; if (r.updated_at_ms < h5oldest) h5oldest = r.updated_at_ms; }
-    const h5recoverAt = h5rows.length > 0 ? h5oldest + 5 * 3600000 : null;
-
-    // 7-day rolling window
-    const w7rows = db.prepare(
-      "SELECT tokens_used, updated_at_ms FROM threads WHERE archived=0 AND tokens_used>0 AND updated_at_ms>=? ORDER BY updated_at_ms ASC"
-    ).all(now - 7 * 86400000);
-    let w7total = 0, w7oldest = Infinity;
-    for (const r of w7rows) { w7total += r.tokens_used; if (r.updated_at_ms < w7oldest) w7oldest = r.updated_at_ms; }
-    const w7recoverAt = w7rows.length > 0 ? w7oldest + 7 * 86400000 : null;
-
-    // Estimated limits for Plus plan (calibrated from Codex app display)
-    // 5h limit: ~500M tokens (53% remaining at 242.8M used → 242.8/0.47 ≈ 516M)
-    // 7d limit: ~400M tokens (0% remaining at 395.6M used → limit ≈ 396M)
-    const H5_LIMIT = 500000000;
-    const W7_LIMIT = 400000000;
-    const h5pct = Math.max(0, Math.round((1 - h5total / H5_LIMIT) * 100));
-    const w7pct = Math.max(0, Math.round((1 - w7total / W7_LIMIT) * 100));
-
     return {
       totalTokens: total.t,
       tokens24h: day.t,
@@ -107,17 +83,18 @@ function getTokenStats(databasePath) {
   }
 }
 
-function normalizePlanInfo(auth, payload, fallbackRefreshedAt = null) {
+function normalizePlanInfo(auth, payload, fallbackRefreshedAt = null, now = Date.now()) {
   const ai = payload["https://api.openai.com/auth"];
   if (!ai) return null;
 
   const plan = ai.chatgpt_plan_type || "unknown";
-  const activeUntil = ai.chatgpt_subscription_active_until || null;
+  const activeUntil = Number.isFinite(Date.parse(ai.chatgpt_subscription_active_until))
+    ? ai.chatgpt_subscription_active_until : null;
   const refreshedAt = auth.last_refresh || fallbackRefreshedAt || null;
   const activeUntilMs = activeUntil ? Date.parse(activeUntil) : NaN;
   const refreshedAtMs = refreshedAt ? Date.parse(refreshedAt) : NaN;
   const renewalPending = plan === "plus" && Number.isFinite(activeUntilMs) &&
-    Number.isFinite(refreshedAtMs) && activeUntilMs < refreshedAtMs;
+    (activeUntilMs <= now || (Number.isFinite(refreshedAtMs) && activeUntilMs < refreshedAtMs));
 
   return {
     plan,
@@ -130,7 +107,7 @@ function normalizePlanInfo(auth, payload, fallbackRefreshedAt = null) {
   };
 }
 
-function applySubscriptionRenewalDate(planInfo, renewalDate) {
+function applySubscriptionRenewalDate(planInfo, renewalDate, now = Date.now()) {
   if (!planInfo || planInfo.plan !== "plus") return planInfo;
 
   const normalizedDate = String(renewalDate || "").trim();
@@ -140,6 +117,7 @@ function applySubscriptionRenewalDate(planInfo, renewalDate) {
   if (!Number.isFinite(parsedAt) || new Date(parsedAt).toISOString().slice(0, 10) !== normalizedDate) {
     return planInfo;
   }
+  if (parsedAt <= now) return planInfo;
 
   const tokenActiveUntil = Date.parse(planInfo.activeUntil || "");
   if (Number.isFinite(tokenActiveUntil) && parsedAt <= tokenActiveUntil) {
@@ -221,6 +199,8 @@ function updateRolloutState(thread) {
     cached = {
       offset: Math.max(0, stat.size - MAX_INITIAL_READ),
       remainder: "",
+      decoder: new StringDecoder("utf8"),
+      skipInitialLine: stat.size > MAX_INITIAL_READ,
       active: false,
       turnId: "",
       lastStartedAt: 0,
@@ -235,22 +215,28 @@ function updateRolloutState(thread) {
     const length = stat.size - cached.offset;
     const buffer = Buffer.alloc(length);
     const fd = fs.openSync(filePath, "r");
+    let bytesRead;
     try {
-      fs.readSync(fd, buffer, 0, length, cached.offset);
+      bytesRead = fs.readSync(fd, buffer, 0, length, cached.offset);
     } finally {
       fs.closeSync(fd);
     }
 
-    let text = cached.remainder + buffer.toString("utf8");
-    if (cached.offset > 0 && !cached.remainder) {
+    let text = cached.remainder + cached.decoder.write(buffer.subarray(0, bytesRead));
+    if (cached.skipInitialLine) {
       const firstNewline = text.indexOf("\n");
-      text = firstNewline >= 0 ? text.slice(firstNewline + 1) : "";
+      if (firstNewline >= 0) {
+        text = text.slice(firstNewline + 1);
+        cached.skipInitialLine = false;
+      } else {
+        text = "";
+      }
     }
 
     const lines = text.split(/\r?\n/);
     cached.remainder = lines.pop() || "";
     for (const line of lines) parseEventLine(line, cached);
-    cached.offset = stat.size;
+    cached.offset += bytesRead;
   }
 
   rolloutCache.set(filePath, cached);
@@ -328,7 +314,7 @@ function buildCodexStatus(running, threads, totalThreads, now = Date.now()) {
     };
   }
 
-  const activeSessions = threads.filter((thread) => thread.active);
+  const activeSessions = threads.filter((thread) => thread.active && !thread.waiting);
   const waitingSessions = threads.filter((thread) => thread.waiting);
   const completedSessions = threads.filter((thread) =>
     !thread.active && thread.lastCompletedAt && now - thread.lastCompletedAt < COMPLETED_WINDOW_MS
@@ -342,34 +328,18 @@ function buildCodexStatus(running, threads, totalThreads, now = Date.now()) {
     updatedAt: Math.max(thread.lastStartedAt, thread.lastCompletedAt, thread.updatedAt),
   });
 
-  if (waitingSessions.length > 0) {
-    const sessions = waitingSessions
-      .map((thread) => toPublicSession(thread, "waiting"))
+  if (activeSessions.length > 0 || waitingSessions.length > 0) {
+    const processing = activeSessions.length > 0;
+    const sessions = [
+      ...activeSessions.map((thread) => toPublicSession(thread, "processing")),
+      ...waitingSessions.map((thread) => toPublicSession(thread, "waiting")),
+    ]
       .sort((a, b) => b.updatedAt - a.updatedAt);
     return {
       source: "codex-local",
-      state: "waiting",
-      light: "yellow",
-      label: "等待输入",
-      sessionCount: sessions.length,
-      sessions,
-      totalThreads,
-      hostname: os.hostname(),
-      lastCompletedAt,
-      updatedAt: now,
-      error: "",
-    };
-  }
-
-  if (activeSessions.length > 0) {
-    const sessions = activeSessions
-      .map((thread) => toPublicSession(thread, "processing"))
-      .sort((a, b) => b.updatedAt - a.updatedAt);
-    return {
-      source: "codex-local",
-      state: "processing",
-      light: "red",
-      label: "正在处理",
+      state: processing ? "processing" : "waiting",
+      light: processing ? "red" : "yellow",
+      label: processing ? "正在处理" : "等待输入",
       sessionCount: sessions.length,
       sessions,
       totalThreads,
@@ -470,5 +440,6 @@ module.exports = {
   findLatestStateDatabase,
   normalizePlanInfo,
   parseEventLine,
+  updateRolloutState,
   readCodexStatus,
 };

@@ -88,3 +88,12 @@ test("requires three consecutive failures and resets after success", () => {
   assert.equal(tracker.count(), 0);
   assert.equal(tracker.recordFailure(), false);
 });
+
+test("prefers the local page origin over tunnel discovery unless explicitly overridden", () => {
+  assert.deepEqual(connection.buildApiCandidates({
+    pageOrigin: "http://127.0.0.1:3456",
+    explicitBase: "https://manual.example",
+    registryBase: "https://live.trycloudflare.com",
+  }), ["https://manual.example", "http://127.0.0.1:3456", "https://live.trycloudflare.com"]);
+  assert.deepEqual(connection.buildApiCandidates({ pageOrigin: "https://molanjie.github.io" }), []);
+});
