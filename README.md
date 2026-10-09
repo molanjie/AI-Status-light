@@ -4,6 +4,16 @@ A local Codex status collector with a responsive traffic-light dashboard.
 
 Live dashboard: https://molanjie.github.io/AI-Status-light/
 
+## Responsive Layout
+
+Portrait phones retain the compact single-column layout. At 768px and above,
+or on landscape screens at least 560px wide, the dashboard uses two columns
+for usage/subscription details and session/connection panels. The status light
+and summary remain full-width. Landscape phones also use tighter spacing.
+Rotation needs no reload; low-height screens scroll normally, and safe-area
+insets keep content away from notches. The top gap is 24px unless the device's
+safe area requires more space.
+
 ## Run Locally
 
 Use Node.js 24 or later with `node:sqlite` support.

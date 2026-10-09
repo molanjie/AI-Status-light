@@ -544,6 +544,89 @@ test("dashboard without task history fits mobile and desktop without moving the 
   }
 });
 
+test("tablet and phone landscape use two readable columns and survive rotation", async t => {
+  const status = validStatus({
+    sessions: Array.from({ length: 8 }, (_, i) => ({
+      title: `Active conversation ${i} ${"long-title-".repeat(20)}`,
+      state: i ? "waiting" : "processing",
+      updatedAt: FIXED_NOW,
+    })),
+    sessionCount: 8,
+    tokenStats: { tokens24h: 226600000, totalTokens: 1000000000,
+      byModel: [{ model: "long-model-name-".repeat(12), tokens: 707400000 }] },
+    plan: { plan: "plus", name: "Long account name ".repeat(10), activeUntil: "2026-08-12T03:30:45Z" },
+  });
+  const runtime = await openStatusPage({ onStatusRequest: route => jsonResponse(route, 200, status) });
+  t.after(() => runtime.close());
+  await runtime.page.waitForFunction(() => lastGoodStatus !== null);
+  await runtime.page.locator(".connection-card summary").click();
+  await runtime.page.evaluate(() => {
+    document.getElementById("connection-detail").textContent = "https://collector.test/" + "long-endpoint".repeat(40);
+    document.getElementById("error").classList.add("visible");
+    document.getElementById("error").textContent = "error-".repeat(100);
+  });
+  for (const [width, height, columns] of [
+    [1024, 768, true], [1180, 820, true], [1366, 1024, true],
+    [768, 1024, true], [820, 1180, true], [568, 320, true],
+    [667, 375, true], [844, 390, true], [932, 430, true],
+    [390, 844, false], [320, 568, false], [1280, 700, true],
+  ]) {
+    await runtime.page.setViewportSize({ width, height });
+    await runtime.page.evaluate(() => window.scrollTo(0, 0));
+    const layout = await runtime.page.evaluate(() => {
+      const rect = id => document.getElementById(id).getBoundingClientRect();
+      const island = rect("island"), usage = rect("usage-card"), sessions = rect("session-list");
+      const footer = document.querySelector(".footer-info").getBoundingClientRect();
+      return {
+        overflow: document.documentElement.scrollWidth > window.innerWidth,
+        top: island.top,
+        centered: Math.abs(island.left + island.width / 2 - window.innerWidth / 2) < 1,
+        columns: sessions.left >= usage.right,
+        sameRow: Math.abs(usage.top - sessions.top) < 1,
+        stacked: sessions.top >= usage.bottom,
+        lightInside: rect("lights").right <= island.right,
+        truncatedModel: getComputedStyle(document.querySelector(".model-bar-name")).textOverflow,
+        scrollable: document.documentElement.scrollHeight > window.innerHeight,
+        footerReachable: footer.bottom <= document.documentElement.scrollHeight,
+      };
+    });
+    assert.equal(layout.overflow, false, `${width}x${height}: horizontal overflow`);
+    assert.equal(layout.top, 24);
+    assert.equal(layout.centered, true);
+    assert.equal(layout.columns, columns, `${width}x${height}: responsive columns`);
+    assert.equal(columns ? layout.sameRow : layout.stacked, true);
+    assert.equal(layout.lightInside, true);
+    assert.equal(layout.truncatedModel, "ellipsis");
+    assert.equal(layout.footerReachable, true);
+    if (height <= 430) assert.equal(layout.scrollable, true);
+    if (process.env.CODEX_LAYOUT_PREVIEW && (width === 1024 || width === 844)) {
+      await runtime.page.screenshot({
+        path: path.join(require("node:os").tmpdir(), `codex-status-layout-${width}.png`),
+        fullPage: true,
+      });
+    }
+  }
+  assert.deepEqual(runtime.pageErrors.map(e => e.message), []);
+});
+
+test("landscape expands remaining panels when usage is absent and respects reduced motion", async t => {
+  const runtime = await openStatusPage({ onStatusRequest: route => jsonResponse(route, 200,
+    validStatus({ tokenStats: null, plan: null })) });
+  t.after(() => runtime.close());
+  await runtime.page.waitForFunction(() => lastGoodStatus !== null);
+  await runtime.page.setViewportSize({ width: 844, height: 390 });
+  await runtime.page.emulateMedia({ reducedMotion: "reduce" });
+  const layout = await runtime.page.evaluate(() => ({
+    island: document.getElementById("island").getBoundingClientRect().width,
+    connection: document.getElementById("connection-card").getBoundingClientRect().width,
+    lightAnimation: getComputedStyle(document.getElementById("light-red")).animationName,
+    viewport: document.querySelector('meta[name="viewport"]').content,
+  }));
+  assert.equal(layout.connection, layout.island);
+  assert.equal(layout.lightAnimation, "none");
+  assert.match(layout.viewport, /viewport-fit=cover/);
+});
+
 test("manual reconnect queues behind an in-flight poll rather than ignoring the click", async t => {
   const gate = deferred();
   const runtime = await openStatusPage({ async onStatusRequest(route, count) {
