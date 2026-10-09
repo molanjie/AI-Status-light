@@ -4,6 +4,9 @@ const os = require("os");
 const { execFileSync } = require("child_process");
 const { DatabaseSync } = require("node:sqlite");
 const { StringDecoder } = require("node:string_decoder");
+const { createHmac, randomBytes } = require("node:crypto");
+const { clearActivity, trackActivity, getCurrentAction } = require("./codex-activity");
+const { createUsageCollector } = require("./token-usage");
 
 const CODEX_HOME = path.join(process.env.USERPROFILE || process.env.HOME || "", ".codex");
 const ACTIVE_STALE_MS = 30 * 60 * 1000;
@@ -15,9 +18,12 @@ const DATABASE_CACHE_MS = 30 * 1000;
 const PROCESS_CACHE_MS = 5 * 1000;
 const STATUS_CACHE_MS = 500;
 const rolloutCache = new Map();
+const sessionKeySalt = randomBytes(32);
 let databaseCache = { path: "", expiresAt: 0 };
 let processCache = { running: false, expiresAt: 0 };
 let statusCache = { value: null, expiresAt: 0 };
+let tokenCache = { path: "", value: null, rows: [], expiresAt: 0 };
+let usageCollector = createUsageCollector();
 
 function normalizeRolloutPath(filePath) {
   return filePath.startsWith("\\\\?\\") ? filePath.slice(4) : filePath;
@@ -59,28 +65,35 @@ function getRecentThreads(databasePath) {
   }
 }
 
-function getTokenStats(databasePath) {
-  const db = new DatabaseSync(databasePath, { readOnly: true });
-  try {
-    const now = Date.now();
-    const total = db.prepare(
-      "SELECT COALESCE(SUM(tokens_used),0) as t FROM threads WHERE archived=0 AND tokens_used>0"
-    ).get();
-    const day = db.prepare(
-      "SELECT COALESCE(SUM(tokens_used),0) as t FROM threads WHERE archived=0 AND tokens_used>0 AND updated_at_ms>=?"
-    ).get(now - 86400000);
-    const byModel = db.prepare(
-      "SELECT model, SUM(tokens_used) as t FROM threads WHERE archived=0 AND tokens_used>0 GROUP BY model ORDER BY t DESC"
-    ).all();
-
-    return {
-      totalTokens: total.t,
-      tokens24h: day.t,
-      byModel: byModel.map((r) => ({ model: r.model || "unknown", tokens: r.t })),
-    };
-  } finally {
-    db.close();
+function getTokenStats(databasePath, now = Date.now()) {
+  if (tokenCache.path === databasePath && tokenCache.value && now < tokenCache.expiresAt &&
+      tokenCache.value.trend && tokenCache.value.trend.status !== "loading") return tokenCache.value;
+  if (tokenCache.path !== databasePath) {
+    usageCollector = createUsageCollector();
+    tokenCache = { path: databasePath, value: null, rows: [], expiresAt: 0 };
   }
+  if (!tokenCache.value || now >= tokenCache.expiresAt) {
+    const db = new DatabaseSync(databasePath, { readOnly: true });
+    try {
+      const total = db.prepare(
+        "SELECT COALESCE(SUM(tokens_used),0) as t FROM threads WHERE archived=0 AND tokens_used>0"
+      ).get();
+      const byModel = db.prepare(
+        "SELECT model, SUM(tokens_used) as t FROM threads WHERE archived=0 AND tokens_used>0 GROUP BY model ORDER BY t DESC"
+      ).all();
+      // Archived tasks also consumed tokens; filtering them would erase usage.
+      tokenCache.rows = db.prepare(
+        "SELECT rollout_path FROM threads WHERE MAX(updated_at_ms,recency_at_ms)>=?"
+      ).all(now - 8 * 86400000);
+      tokenCache.value = { totalTokens: total.t,
+        byModel: byModel.map(row => ({ model: row.model || "unknown", tokens: row.t })) };
+      tokenCache.expiresAt = now + 5000;
+    } finally { db.close(); }
+  }
+  const trend = usageCollector.read(tokenCache.rows, { now });
+  tokenCache.value = { ...tokenCache.value, tokens24h: trend.tokens24h,
+    trend: { ...trend, updatedAt: Date.parse(trend.updatedAt) || now } };
+  return tokenCache.value;
 }
 
 function normalizePlanInfo(auth, payload, fallbackRefreshedAt = null, now = Date.now()) {
@@ -150,7 +163,7 @@ function getPlanInfo() {
 }
 
 function parseEventLine(line, state) {
-  if (!/"(?:task_started|turn_started|task_complete|turn_complete|turn_aborted|error|function_call|function_call_output|exec_approval_request|apply_patch_approval_request|request_user_input|request_permissions|exec_command_begin|patch_apply_begin)"/.test(line)) return;
+  if (!/"(?:task_started|turn_started|task_complete|turn_complete|turn_aborted|error|function_call|function_call_output|custom_tool_call|custom_tool_call_output|exec_approval_request|apply_patch_approval_request|request_user_input|request_permissions|exec_command_begin|exec_command_end|patch_apply_begin|patch_apply_end)"/.test(line)) return;
 
   try {
     const event = JSON.parse(line);
@@ -161,6 +174,9 @@ function parseEventLine(line, state) {
     if (event.type !== "event_msg" && event.type !== "response_item") return;
     const taskEvent = event.type === "event_msg";
     const callId = payload.call_id || payload.id || "";
+    if (!taskEvent || !["task_started", "turn_started", "task_complete", "turn_complete", "turn_aborted", "error"].includes(type)) {
+      trackActivity(event, state);
+    }
 
     if (taskEvent && (type === "task_started" || type === "turn_started")) {
       state.seenTurns = state.seenTurns || new Set();
@@ -173,6 +189,7 @@ function parseEventLine(line, state) {
       state.lastOutcome = "";
       state.lifecycleUnknown = false;
       state.resolvedInputs = new Set();
+      clearActivity(state);
       clearWaiting(state);
     } else if (taskEvent && ["task_complete", "turn_complete", "turn_aborted", "error"].includes(type)) {
       if (state.lastStartedAt && eventTime < state.lastStartedAt) return;
@@ -185,6 +202,7 @@ function parseEventLine(line, state) {
       const outcome = type === "error" || payload.error ? "error"
         : type === "turn_aborted" ? "cancelled" : "completed";
       state.active = false;
+      clearActivity(state);
       state.lifecycleUnknown = false;
       clearWaiting(state);
       state.lastOutcome = outcome;
@@ -208,7 +226,7 @@ function parseEventLine(line, state) {
       state.pendingInputs = state.pendingInputs || new Map();
       state.pendingInputs.set(callId, { at: eventTime, type });
       refreshWaiting(state);
-    } else if ((event.type === "response_item" && type === "function_call_output") ||
+    } else if ((event.type === "response_item" && ["function_call_output", "custom_tool_call_output"].includes(type)) ||
         (taskEvent && ["exec_command_begin", "patch_apply_begin"].includes(type))) {
       if (state.pendingInputs) {
         if (eventTime < (state.lastStartedAt || 0)) return;
@@ -299,7 +317,10 @@ function updateRolloutState(thread) {
   const now = Date.now();
   const waiting = cached.waiting && now - cached.waitingAt < RECENT_THREAD_MS;
   const active = cached.active && now - Math.max(cached.lastStartedAt, stat.mtimeMs) < ACTIVE_STALE_MS;
+  // Stable within this collector only; never expose the source thread ID.
+  const sessionKey = thread.id ? createHmac("sha256", sessionKeySalt).update(thread.id).digest("hex").slice(0, 32) : undefined;
   return {
+    sessionKey,
     title: normalizeTitle(thread.title),
     active,
     waiting,
@@ -308,7 +329,10 @@ function updateRolloutState(thread) {
     lastCompletedAt: cached.lastCompletedAt,
     lastFinishedAt: cached.lastFinishedAt,
     lastOutcome: cached.lastOutcome,
-    history: cached.history.map(result => ({ ...result, title: normalizeTitle(thread.title) })),
+    currentAction: getCurrentAction(cached),
+    waitingSince: cached.waitingAt || 0,
+    model: /^[\w.:-]{1,80}$/.test(thread.model || "") ? thread.model : "",
+    history: cached.history.map(result => ({ ...result, sessionKey, title: normalizeTitle(thread.title) })),
     updatedAt: stat.mtimeMs,
   };
 }
@@ -409,10 +433,15 @@ function buildCodexStatus(running, threads, totalThreads, now = Date.now(), opti
   if (!running) return value;
 
   const toPublicSession = (thread, state) => ({
+    sessionKey: thread.sessionKey,
     title: thread.title,
     state,
     lastStartedAt: thread.lastStartedAt,
     lastCompletedAt: thread.lastCompletedAt,
+    lastFinishedAt: thread.lastFinishedAt || 0,
+    waitingSince: thread.waitingSince || 0,
+    currentAction: state === "processing" || state === "waiting" ? thread.currentAction || null : null,
+    model: thread.model || "",
     updatedAt: Math.max(thread.lastStartedAt || 0, thread.lastFinishedAt || 0, thread.lastCompletedAt || 0, thread.updatedAt || 0),
   });
 
@@ -458,7 +487,7 @@ function readCodexStatus(options = {}) {
   try {
     const dbPath = Object.hasOwn(options, "threadRows") ? null : findLatestStateDatabase(now);
     const threadRows = options.threadRows || getRecentThreads(dbPath);
-    const tokenStats = Object.hasOwn(options, "tokenStats") ? options.tokenStats : getTokenStats(dbPath);
+    const tokenStats = Object.hasOwn(options, "tokenStats") ? options.tokenStats : getTokenStats(dbPath, now);
     cleanupRolloutCache(threadRows);
     const { threads, unreadableThreads } = collectRolloutStates(threadRows);
     value = buildCodexStatus(running, threads, threadRows.length, now, { unreadableThreads });
@@ -491,6 +520,7 @@ module.exports = {
   buildCodexStatus,
   collectRolloutStates,
   findLatestStateDatabase,
+  getTokenStats,
   normalizePlanInfo,
   parseEventLine,
   updateRolloutState,

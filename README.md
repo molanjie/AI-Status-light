@@ -58,9 +58,33 @@ endpoint discovery and retries without erasing the last valid snapshot.
 Invalid JSON/status data is rejected, and the 2.5-second timeout covers both
 headers and the JSON response body.
 
-Token totals come from Codex's local thread counters. The recent-dialogue
-metric sums lifetime tokens for dialogues updated in the last 24 hours;
-it is not a count of tokens newly consumed within 24 hours or a quota estimate.
+## Live Details And Usage
+
+Subscription details have their own card, with expiry or renewal date,
+remaining days, and the source's refresh time. Local login metadata is not a
+live billing query; expired or missing dates explicitly await synchronization.
+
+Current conversations can be expanded to read their full displayed title,
+model, status, start time, and running duration. The current action uses real
+tool events and only exposes categories such as reading, editing, executing,
+or searching, never command bodies or internal paths. Durations stop advancing
+when the connection is lost.
+
+Today and last-seven-day usage come from increments between JSONL cumulative
+token observations, including archived conversations. Calendar days use
+Asia/Shanghai; the rolling 24-hour counter is separate. Lifetime totals and
+per-model totals still come from thread counters and are labelled separately.
+Cached input is already included in input tokens, not added again. Incremental
+scanning reports loading, and missing, reset, or ambiguous records are marked
+incomplete rather than presented as exact consumption. No quota is inferred.
+
+Sound and browser notifications are opt-in and can be filtered by completion,
+waiting, or error. Initial snapshots and reconnects do not replay old alerts.
+Settings persist locally; audio may need the test button after a page reload
+to satisfy browser gesture requirements. These are page-local alerts, not
+background push notifications: closing the page stops them.
+Bursts are coalesced rather than discarded. Opaque, collector-scoped session
+keys keep renamed or simultaneous tasks distinct without publishing thread IDs.
 
 ## Background Service
 

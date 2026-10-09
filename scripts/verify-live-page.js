@@ -183,6 +183,11 @@ async function main() {
     await page.goto(pageUrl, { waitUntil: "domcontentloaded" });
     await waitForText(page, "#status-time", /^已同步\s/);
     const initial = await readPageState(page);
+    assert.equal(await page.locator("#subscription-card").count(), 1);
+    assert.equal(await page.locator("#trend-week").count(), 1);
+    assert.equal(await page.locator("#task-history").count(), 0);
+    assert.equal(await page.locator("#alert-sound").isChecked(), false);
+    assert.equal(await page.locator("#alert-browser").isChecked(), false);
     assert.ok(initial.snapshot?.data, "initial live sync did not save a snapshot");
     assert.equal(
       initial.snapshot.data.sessionCount,

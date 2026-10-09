@@ -130,3 +130,20 @@ test("optional renderer data is validated before cache and render", () => {
     { error: {} },
   ]) assert.equal(connection.isValidStatus({ ...status, ...bad }), false);
 });
+
+test("current actions and real usage trends are validated before rendering or caching", () => {
+  const status = { state: "processing", light: "red", label: "Working", sessionCount: 1,
+    updatedAt: Date.now(), sessions: [{ title: "Current", state: "processing" }] };
+  for (const action of ["invalid", { kind: "read", label: {}, startedAt: 1 },
+    { kind: "arbitrary-tool-name", label: "secret", startedAt: 1 }, { kind: "read", label: "Read", startedAt: -1 }]) {
+    assert.equal(connection.isValidStatus({ ...status, sessions: [{ ...status.sessions[0], currentAction: action }] }), false);
+  }
+  for (const trend of [[], { status: "ready", days: [null] }, { status: "ready", days: "bad" }]) {
+    assert.equal(connection.isValidStatus({ ...status, tokenStats: { trend } }), false);
+  }
+  for (const sessionKey of [123, {}, "private-thread-id"]) {
+    assert.equal(connection.isValidStatus({ ...status, sessions: [{ ...status.sessions[0], sessionKey }] }), false);
+  }
+  assert.equal(connection.isValidStatus({ ...status, sessions: [{ ...status.sessions[0],
+    sessionKey: "a".repeat(32), model: "gpt-5.5", currentAction: { kind: "read", label: "Read", startedAt: 1 } }] }), true);
+});

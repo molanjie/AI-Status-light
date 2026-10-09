@@ -62,7 +62,7 @@ async function openStatusPage(options = {}) {
   const requestCounts = { registry: 0, status: 0, statusUrls: [] };
 
   await context.addInitScript(
-    ({ appOrigin, fixedNow, registryUrl, snapshotKey, snapshot, stallFirstRegistryFetch }) => {
+    ({ appOrigin, fixedNow, registryUrl, snapshotKey, snapshot, stallFirstRegistryFetch, notificationMode }) => {
       if (window.location.origin !== appOrigin) return;
       window.__testNow = fixedNow;
       Date.now = () => window.__testNow;
@@ -73,6 +73,24 @@ async function openStatusPage(options = {}) {
       };
       window.clearInterval = () => {};
       window.localStorage.clear();
+      if (notificationMode) {
+        window.__notices = [];
+        window.__permissionRequests = 0;
+        window.__soundStarts = 0;
+        window.__audioContexts = 0;
+        window.Notification = class {
+          static permission = "default";
+          static async requestPermission() { window.__permissionRequests++; return this.permission = notificationMode; }
+          constructor(title, options) { window.__notices.push({ title, options }); }
+          close() {}
+        };
+        window.AudioContext = class {
+          constructor() { window.__audioContexts++; this.state = "suspended"; this.currentTime = 0; this.destination = {}; }
+          async resume() { this.state = "running"; }
+          createOscillator() { return { frequency: {}, connect() {}, start() { window.__soundStarts++; }, stop() {} }; }
+          createGain() { return { gain: { setValueAtTime() {}, exponentialRampToValueAtTime() {} }, connect() {} }; }
+        };
+      }
       if (snapshot) {
         window.localStorage.setItem(snapshotKey, JSON.stringify(snapshot));
       }
@@ -106,6 +124,7 @@ async function openStatusPage(options = {}) {
       snapshotKey: SNAPSHOT_KEY,
       snapshot: options.snapshot || null,
       stallFirstRegistryFetch: options.stallFirstRegistryFetch || false,
+      notificationMode: options.notificationMode || null,
     }
   );
 
@@ -125,6 +144,11 @@ async function openStatusPage(options = {}) {
         contentType: "application/javascript",
         body: connectionScript,
       });
+      return;
+    }
+    if (requestUrl.origin === APP_ORIGIN && ["/status-alerts.js", "/dashboard-extras.js"].includes(requestUrl.pathname)) {
+      await route.fulfill({ contentType: "application/javascript",
+        body: fs.readFileSync(path.join(root, "public", requestUrl.pathname.slice(1)), "utf8") });
       return;
     }
     if (route.request().url().startsWith(REGISTRY_URL)) {
@@ -609,7 +633,7 @@ test("tablet and phone landscape use two readable columns and survive rotation",
   assert.deepEqual(runtime.pageErrors.map(e => e.message), []);
 });
 
-test("landscape expands remaining panels when usage is absent and respects reduced motion", async t => {
+test("landscape retains the subscription placeholder when usage is absent and respects reduced motion", async t => {
   const runtime = await openStatusPage({ onStatusRequest: route => jsonResponse(route, 200,
     validStatus({ tokenStats: null, plan: null })) });
   t.after(() => runtime.close());
@@ -619,10 +643,13 @@ test("landscape expands remaining panels when usage is absent and respects reduc
   const layout = await runtime.page.evaluate(() => ({
     island: document.getElementById("island").getBoundingClientRect().width,
     connection: document.getElementById("connection-card").getBoundingClientRect().width,
+    subscription: document.getElementById("subscription-card").getBoundingClientRect().width,
     lightAnimation: getComputedStyle(document.getElementById("light-red")).animationName,
     viewport: document.querySelector('meta[name="viewport"]').content,
   }));
-  assert.equal(layout.connection, layout.island);
+  assert.equal(layout.connection, layout.subscription);
+  assert.ok(layout.connection < layout.island);
+  assert.match(await runtime.page.locator("#plan-sub-info").textContent(), /待同步/);
   assert.equal(layout.lightAnimation, "none");
   assert.match(layout.viewport, /viewport-fit=cover/);
 });
@@ -664,4 +691,181 @@ test("malformed optional fields in cached data cannot abort initial polling", as
   await waitFor(() => runtime.requestCounts.status > 0 || runtime.pageErrors.length > 0, "startup did not run");
   assert.deepEqual(runtime.pageErrors.map(e => e.message), []);
   assert.equal(runtime.requestCounts.status, 1);
+});
+
+function featureStatus(overrides = {}) {
+  return validStatus({
+    sessions: [{ sessionKey: "a".repeat(32), title: "A long real current title ".repeat(8), state: "processing", lastStartedAt: FIXED_NOW - 20000,
+      updatedAt: FIXED_NOW, model: "gpt-5.5", currentAction: { kind: "read", label: "读取文件", startedAt: FIXED_NOW - 3000 } }],
+    plan: { plan: "plus", name: "Actual account", activeUntil: "2026-08-12T03:30:45Z", refreshedAt: "2026-07-30T00:00:00Z" },
+    tokenStats: { tokens24h: 60, totalTokens: 999999, byModel: [], trend: {
+      status: "ready", timeZone: "Asia/Shanghai", tokensToday: 30, tokens7d: 70, tokens24h: 60,
+      inputTokens: 60, outputTokens: 10, cachedInputTokens: 20, unreadableFiles: 0, updatedAt: FIXED_NOW,
+      days: Array.from({ length: 7 }, (_, i) => ({ date: `2026-07-${25 + i}`, tokens: i === 6 ? 30 : i === 5 ? 40 : 0,
+        inputTokens: i === 6 ? 25 : i === 5 ? 35 : 0, outputTokens: i === 6 ? 5 : i === 5 ? 5 : 0,
+        cachedInputTokens: i === 6 ? 10 : i === 5 ? 10 : 0 })),
+    } }, ...overrides,
+  });
+}
+
+test("independent subscription card, live action and expandable session stay current", async t => {
+  let status = featureStatus();
+  const runtime = await openStatusPage({ onStatusRequest: route => jsonResponse(route, 200, status) });
+  t.after(() => runtime.close());
+  await runtime.page.waitForFunction(() => lastGoodStatus !== null);
+  assert.equal(await runtime.page.locator("#subscription-card #plan-sub-info").count(), 1);
+  assert.match(await runtime.page.locator("#subscription-date").textContent(), /2026/);
+  assert.match(await runtime.page.locator("#subscription-source").textContent(), /本地登录/);
+  assert.match(await runtime.page.locator("#subscription-refreshed").textContent(), /2026/);
+  assert.equal(await runtime.page.locator("#current-action").textContent(), "读取文件");
+  const detail = runtime.page.locator("#session-list details").first();
+  await detail.locator("summary").click();
+  assert.match(await detail.locator(".session-detail").textContent(), /gpt-5.5/);
+  assert.equal(await detail.locator(".session-detail-title").textContent(), status.sessions[0].title);
+  assert.match(await detail.locator(".session-duration").textContent(), /20秒/);
+  status = featureStatus({ sessions: [{ ...status.sessions[0], currentAction: { kind: "write", label: "修改文件", startedAt: FIXED_NOW } }] });
+  await runtime.page.evaluate(() => fetchStatus());
+  assert.equal(await detail.getAttribute("open"), "");
+  assert.equal(await runtime.page.locator("#current-action").textContent(), "修改文件");
+  await detail.locator("summary").focus();
+  status.sessions[0].title = "Renamed current conversation";
+  await runtime.page.evaluate(() => fetchStatus());
+  assert.equal(await detail.getAttribute("open"), "");
+  assert.equal(await runtime.page.evaluate(() => document.activeElement.className), "session-summary");
+  await runtime.page.evaluate(() => {
+    window.__testNow += 1000;
+    dashboardExtras.updateTimers();
+  });
+  assert.match(await detail.locator(".session-duration").textContent(), /21秒/);
+  assert.equal(await runtime.page.locator("#task-history").count(), 0);
+});
+
+test("real trend controls show daily increments, not lifetime totals, and mark partial data", async t => {
+  let status = featureStatus();
+  const runtime = await openStatusPage({ onStatusRequest: route => jsonResponse(route, 200, status) });
+  t.after(() => runtime.close());
+  await runtime.page.waitForFunction(() => lastGoodStatus !== null);
+  assert.equal(await runtime.page.locator("#token-24h").textContent(), "30");
+  assert.match(await runtime.page.locator("#trend-status").textContent(), /Asia\/Shanghai/);
+  await runtime.page.locator("#trend-week").click();
+  assert.equal(await runtime.page.locator("#trend-total").textContent(), "70");
+  assert.equal(await runtime.page.locator("#trend-chart .trend-column").count(), 7);
+  await runtime.page.locator("#trend-today").click();
+  assert.equal(await runtime.page.locator("#trend-total").textContent(), "30");
+  status.tokenStats.trend.status = "partial";
+  status.tokenStats.trend.unreadableFiles = 1;
+  await runtime.page.evaluate(() => fetchStatus());
+  assert.match(await runtime.page.locator("#trend-status").textContent(), /部分|不完整/);
+  status.tokenStats.trend.status = "loading";
+  await runtime.page.evaluate(() => fetchStatus());
+  assert.match(await runtime.page.locator("#token-24h").textContent(), /统计/);
+});
+
+test("extras and expanded current conversations fit tablet, landscape and narrow portrait", async t => {
+  const runtime = await openStatusPage({ onStatusRequest: route => jsonResponse(route, 200, featureStatus()) });
+  t.after(() => runtime.close());
+  await runtime.page.waitForFunction(() => lastGoodStatus !== null);
+  await runtime.page.locator("#session-list details summary").first().click();
+  await runtime.page.locator("#alert-settings summary").click();
+  for (const [width, height] of [[320, 568], [390, 844], [568, 320], [844, 390], [768, 1024], [1024, 768]]) {
+    await runtime.page.setViewportSize({ width, height });
+    await runtime.page.evaluate(() => window.scrollTo(0, 0));
+    assert.equal(await runtime.page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false, `${width}x${height}`);
+    assert.equal(await runtime.page.locator("#island").evaluate(n => n.getBoundingClientRect().top), 24);
+    assert.equal(await runtime.page.locator("#alert-sound").isChecked(), false);
+    assert.equal(await runtime.page.locator("#alert-browser").isChecked(), false);
+    if (process.env.CODEX_LAYOUT_PREVIEW && [320, 844, 1024].includes(width)) {
+      await runtime.page.screenshot({ path: require("node:path").join(require("node:os").tmpdir(), `codex-extras-${width}.png`), fullPage: true });
+    }
+  }
+  assert.deepEqual(runtime.pageErrors.map(e => e.message), []);
+});
+
+test("reminders require opt-in, deduplicate real events and stay silent on reconnect", async t => {
+  let available = true, status = featureStatus({ updatedAt: FIXED_NOW, history: [] });
+  const runtime = await openStatusPage({ notificationMode: "granted", onStatusRequest: route =>
+    jsonResponse(route, available ? 200 : 503, available ? status : {}) });
+  t.after(() => runtime.close());
+  await runtime.page.waitForFunction(() => lastGoodStatus !== null);
+  assert.deepEqual(await runtime.page.evaluate(() => [__notices.length, __permissionRequests, __audioContexts]), [0, 0, 0]);
+  await runtime.page.locator("#alert-settings summary").click();
+  await runtime.page.locator("#alert-browser").check();
+  await runtime.page.locator("#alert-sound").check();
+  status = featureStatus({ updatedAt: FIXED_NOW + 2000, history: [{ title: "Done", state: "completed",
+    finishedAt: FIXED_NOW + 1000, startedAt: FIXED_NOW - 20000 }] });
+  await runtime.page.evaluate(() => { window.__testNow += 2000; });
+  await runtime.page.evaluate(() => fetchStatus());
+  await runtime.page.evaluate(() => fetchStatus());
+  assert.equal(await runtime.page.evaluate(() => __notices.length), 1);
+  assert.equal(await runtime.page.evaluate(() => __soundStarts), 1);
+  assert.match(await runtime.page.locator("#alert-toast").textContent(), /已完成/);
+  assert.equal(await runtime.page.evaluate(() => JSON.parse(localStorage.getItem("codex_status_alert_preferences_v1")).sound), true);
+  available = false;
+  for (let i = 0; i < 3; i++) await runtime.page.evaluate(() => fetchStatus());
+  const lastTimer = await runtime.page.locator(".session-duration").textContent();
+  await runtime.page.evaluate(() => { window.__testNow += 10000; dashboardExtras.updateTimers(); });
+  assert.equal(await runtime.page.locator(".session-duration").textContent(), lastTimer);
+  assert.match(await runtime.page.locator("#current-action").textContent(), /上次动作/);
+  available = true;
+  status = featureStatus({ updatedAt: FIXED_NOW + 12000, history: [{ title: "While disconnected", state: "completed",
+    finishedAt: FIXED_NOW + 10000, startedAt: FIXED_NOW }] });
+  await runtime.page.evaluate(() => fetchStatus());
+  assert.equal(await runtime.page.evaluate(() => __notices.length), 1);
+  assert.deepEqual(runtime.pageErrors.map(e => e.message), []);
+});
+
+test("denied notifications remain off without breaking live data or sound controls", async t => {
+  const runtime = await openStatusPage({ notificationMode: "denied", onStatusRequest: route => jsonResponse(route, 200, featureStatus()) });
+  t.after(() => runtime.close());
+  await runtime.page.waitForFunction(() => lastGoodStatus !== null);
+  await runtime.page.locator("#alert-settings summary").click();
+  await runtime.page.locator("#alert-browser").click();
+  await runtime.page.waitForFunction(() => !document.getElementById("alert-browser").checked);
+  assert.match(await runtime.page.locator("#alert-status").textContent(), /未获授权/);
+  assert.equal(await runtime.page.locator("#status-label").textContent(), "正在处理");
+  assert.deepEqual(runtime.pageErrors.map(e => e.message), []);
+});
+
+test("distinct completions within cooldown are queued instead of lost", async t => {
+  let status = featureStatus({ history: [] });
+  const runtime = await openStatusPage({ notificationMode: "granted", onStatusRequest: route => jsonResponse(route, 200, status) });
+  t.after(() => runtime.close());
+  await runtime.page.waitForFunction(() => lastGoodStatus !== null);
+  await runtime.page.locator("#alert-settings summary").click();
+  await runtime.page.locator("#alert-browser").check();
+  status.updatedAt = FIXED_NOW + 1000;
+  status.history = [{ sessionKey: "a".repeat(32), title: "First", state: "completed", startedAt: FIXED_NOW - 20000, finishedAt: FIXED_NOW + 500 }];
+  await runtime.page.evaluate(() => { window.__testNow += 1000; return fetchStatus(); });
+  assert.equal(await runtime.page.evaluate(() => __notices.length), 1);
+  await runtime.page.evaluate(() => {
+    window.__alertTimeouts = [];
+    window.__nativeTimeout = window.setTimeout;
+    window.setTimeout = (fn, delay, ...args) => {
+      if (delay > 0 && delay < 5000) { window.__alertTimeouts.push(() => fn(...args)); return 999; }
+      return window.__nativeTimeout(fn, delay, ...args);
+    };
+  });
+  status.updatedAt = FIXED_NOW + 3000;
+  status.history.push({ sessionKey: "b".repeat(32), title: "Second", state: "completed", startedAt: FIXED_NOW - 10000, finishedAt: FIXED_NOW + 2000 });
+  await runtime.page.evaluate(() => { window.__testNow += 2000; return fetchStatus(); });
+  assert.equal(await runtime.page.evaluate(() => __notices.length), 1);
+  await runtime.page.evaluate(() => {
+    window.__testNow += 4000;
+    window.__alertTimeouts.splice(0).forEach(fn => fn());
+    window.setTimeout = window.__nativeTimeout;
+  });
+  assert.equal(await runtime.page.evaluate(() => __notices.length), 2);
+});
+
+test("expired and absent subscription dates remain explicit instead of inferring renewal", async t => {
+  let status = featureStatus({ plan: { plan: "plus", activeUntil: "2026-01-01T00:00:00Z", subscriptionStatus: "renewal_pending" } });
+  const runtime = await openStatusPage({ onStatusRequest: route => jsonResponse(route, 200, status) });
+  t.after(() => runtime.close());
+  await runtime.page.waitForFunction(() => lastGoodStatus !== null);
+  assert.match(await runtime.page.locator("#plan-sub-info").textContent(), /续订时间待同步/);
+  assert.match(await runtime.page.locator("#subscription-date").textContent(), /不推测/);
+  status.plan = null;
+  await runtime.page.evaluate(() => fetchStatus());
+  assert.match(await runtime.page.locator("#plan-sub-info").textContent(), /订阅信息待同步/);
+  assert.equal(await runtime.page.locator("#plan-badge").textContent(), "");
 });

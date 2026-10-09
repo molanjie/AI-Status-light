@@ -607,6 +607,7 @@
     width: min(520px, 100%);
   }
   .detail-panels, .side-panels { display: contents; }
+  .primary-panels { display: contents; }
   /* Session list */
   .session-list {
     width: 100%;
@@ -708,12 +709,10 @@
       align-items: start;
     }
     .detail-panels > *, .side-panels > * { min-width: 0; }
-    .side-panels { display: flex; flex-direction: column; gap: 16px; }
-    .usage-card[style*="display:none"] + .side-panels,
-    .usage-card[style*="display: none"] + .side-panels { grid-column: 1 / -1; }
+    .primary-panels, .side-panels { display: flex; flex-direction: column; gap: 16px; }
   }
   @media (min-width: 560px) and (max-height: 500px) and (orientation: landscape) {
-    .dashboard, .side-panels { gap: 12px; }
+    .dashboard, .primary-panels, .side-panels { gap: 12px; }
     .detail-panels { gap: 12px; }
     .island { gap: 14px; padding: 14px 18px; border-radius: 24px; }
     .status-label { font-size: 24px; }
@@ -722,6 +721,54 @@
     .stat-card { padding: 9px 8px; }
     .usage-card, .timeline, .session-list, .connection-card { padding: 12px 14px; border-radius: 16px; }
     .model-bar-name { width: 90px; }
+  }
+  .current-action { width: fit-content; max-width: 100%; margin-top: 7px; padding: 3px 7px; border-radius: 6px; font-size: 11px; color: #b9c7ce; background: rgba(255,255,255,0.055); overflow-wrap: anywhere; }
+  .current-action:empty { display: none; }
+  .subscription-card, .alert-card { width: 100%; min-width: 0; padding: 14px 18px; border: 1px solid rgba(255,255,255,0.08); border-radius: 20px; background: linear-gradient(145deg, rgba(27,32,35,0.88), rgba(10,13,15,0.88)); }
+  .subscription-card[data-stale="true"] { border-color: rgba(255,214,10,0.16); }
+  .subscription-card .plan-sub-info { margin: 10px 0; padding: 0; border: 0; flex-direction: column; gap: 5px; }
+  .subscription-card .plan-sub-info > :last-child { color: #e3edef; font-size: 19px; font-weight: 700; line-height: 1.4; }
+  .subscription-card .plan-sub-info > :first-child:empty { display: none; }
+  .subscription-card .panel-note { overflow-wrap: anywhere; margin-top: 4px; }
+  .session-item { display: block; }
+  .session-summary { display: flex; align-items: center; gap: 8px; min-height: 44px; cursor: pointer; list-style: none; }
+  .session-summary::-webkit-details-marker { display: none; }
+  .session-summary::after { content: "+"; flex-shrink: 0; color: #69777d; }
+  .session-item[open] .session-summary::after { content: "-"; }
+  .session-info { align-items: stretch; flex-direction: column; gap: 3px; }
+  .session-badge { flex-shrink: 0; font-size: 10px; color: #94a4ac; }
+  .session-badge.processing, .session-badge.error { color: #ff8a82; }
+  .session-badge.waiting { color: #e4c953; }
+  .session-badge.completed { color: #68d58a; }
+  .session-detail { padding: 7px 0 4px 16px; overflow-wrap: anywhere; }
+  .session-detail-title { color: #c8d3d8; font-size: 12px; line-height: 1.5; margin-bottom: 5px; }
+  .session-detail .panel-note { margin-top: 3px; }
+  .session-empty { padding: 10px 0 3px; }
+  .usage-trend { margin-top: 14px; padding-top: 12px; border-top: 1px solid rgba(255,255,255,0.06); }
+  .trend-controls { display: flex; gap: 4px; }
+  .trend-controls button { border: 1px solid transparent; border-radius: 8px; background: transparent; color: #87949b; padding: 6px 9px; min-height: 36px; font: inherit; font-size: 11px; cursor: pointer; }
+  .trend-controls button[aria-pressed="true"] { border-color: rgba(48,209,88,0.25); color: #86d7a0; background: rgba(48,209,88,0.08); }
+  .trend-total { margin-top: 8px; color: #e0e8eb; font-size: 21px; font-weight: 700; }
+  .trend-chart { display: grid; grid-template-columns: repeat(7,minmax(0,1fr)); gap: 7px; margin: 10px 0; }
+  .trend-chart[data-range="today"] { grid-template-columns: minmax(0,1fr); }
+  .trend-column { min-width: 0; display: flex; align-items: center; flex-direction: column; gap: 5px; font-size: 9px; color: #8c9ba3; font-variant-numeric: tabular-nums; }
+  .trend-value { max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+  .trend-track { width: 100%; height: 64px; display: flex; align-items: flex-end; justify-content: center; background: rgba(255,255,255,0.025); border-radius: 5px; }
+  .trend-bar { display: block; width: min(28px,80%); border-radius: 3px; background: linear-gradient(#59ca92,#278563); }
+  .trend-chart[data-status="loading"] .trend-bar, .trend-chart[data-status="partial"] .trend-bar { background: #8b8250; }
+  #trend-breakdown, #trend-status { margin-top: 5px; overflow-wrap: anywhere; }
+  .alert-card summary { cursor: pointer; font-size: 12px; color: #aab7bd; min-height: 36px; display: list-item; }
+  .alert-options { display: flex; flex-wrap: wrap; gap: 4px 12px; margin: 8px 0; }
+  .alert-options label { display: inline-flex; align-items: center; gap: 6px; min-height: 36px; color: #a8b6bd; font-size: 12px; cursor: pointer; }
+  .alert-options input { accent-color: #30d158; width: 16px; height: 16px; }
+  .alert-options input:disabled + span { opacity: 0.55; }
+  .alert-toast { color: #cbe8d5; border: 1px solid rgba(48,209,88,0.2); border-radius: 8px; padding: 7px 9px; margin-top: 8px; font-size: 12px; }
+  .session-summary:focus-visible, .trend-controls button:focus-visible, .alert-card summary:focus-visible, .alert-options input:focus-visible { outline: 2px solid #ffd60a; outline-offset: 3px; }
+  @media (max-width: 420px), (max-height: 500px) and (orientation: landscape) {
+    .subscription-card, .alert-card { padding: 12px 14px; border-radius: 16px; }
+    .subscription-card .plan-sub-info > :last-child { font-size: 17px; }
+    .trend-chart { gap: 4px; }
+    .trend-controls button { padding: 6px; }
   }
   /* Footer info bar */
   .footer-info {
@@ -1005,6 +1052,7 @@
       </div>
       <div class="status-label" id="status-label">正在同步状态</div>
       <div class="thread-title" id="thread-title">正在连接状态服务</div>
+      <div class="current-action" id="current-action"></div>
       <div class="activity-track" aria-hidden="true"><div class="activity-bar"></div></div>
       <div class="error" id="error"></div>
       <div class="status-time" id="status-time"></div>
@@ -1035,17 +1083,30 @@
     </div>
   </div>
   <div class="detail-panels">
+  <div class="primary-panels">
   <div class="usage-card" id="usage-card" style="display:none">
     <div class="usage-header">
       <span class="usage-title">用量统计</span>
-      <span class="plan-badge" id="plan-badge"></span>
     </div>
     <div class="usage-tokens">
       <span class="token-big" id="token-24h">0</span>
-      <span class="token-label" title="最近24小时更新过的对话累计用量">tokens · 近期对话累计</span>
+      <span class="token-label" id="token-label">tokens · 近期对话累计</span>
     </div>
     <div class="usage-sub" id="token-total"></div>
     <div class="model-bars" id="model-bars"></div>
+    <section class="usage-trend" aria-label="真实用量趋势">
+      <div class="panel-header">
+        <span class="usage-title">真实用量趋势</span>
+        <div class="trend-controls" aria-label="统计范围">
+          <button type="button" id="trend-today" aria-pressed="true">今日</button>
+          <button type="button" id="trend-week" aria-pressed="false">近7天</button>
+        </div>
+      </div>
+      <div class="trend-total"><span id="trend-total">—</span> <span class="token-label">tokens</span></div>
+      <div class="trend-chart" id="trend-chart" role="group" aria-label="每日新增 Tokens"></div>
+      <p class="panel-note" id="trend-breakdown"></p>
+      <p class="panel-note" id="trend-status">趋势数据待同步</p>
+    </section>
     <div class="quota-windows" id="quota-windows" style="display:none">
       <div class="quota-box">
         <div class="quota-label">5小时额度</div>
@@ -1066,7 +1127,14 @@
         </div>
       </div>
     </div>
-    <div class="plan-sub-info" id="plan-sub-info"></div>
+  </div>
+  <section class="subscription-card" id="subscription-card" aria-label="订阅与续订">
+    <div class="panel-header"><span class="usage-title">订阅与续订</span><span class="plan-badge" id="plan-badge"></span></div>
+    <div class="plan-sub-info" id="plan-sub-info"><span></span><span>订阅信息待同步</span></div>
+    <p class="panel-note" id="subscription-date">暂无可确认日期</p>
+    <p class="panel-note" id="subscription-source">来源暂不可用</p>
+    <p class="panel-note" id="subscription-refreshed">来源更新时间未知</p>
+  </section>
   </div>
   <div class="side-panels">
   <div class="timeline" id="timeline">
@@ -1096,6 +1164,23 @@
       </dl>
     </details>
   </section>
+  <section class="alert-card" aria-label="任务提醒设置">
+    <details id="alert-settings">
+      <summary>任务提醒</summary>
+      <div class="alert-options">
+        <label><input type="checkbox" id="alert-sound"><span>声音</span></label>
+        <label><input type="checkbox" id="alert-browser"><span>浏览器通知</span></label>
+      </div>
+      <div class="alert-options">
+        <label><input type="checkbox" id="alert-completed" checked><span>完成</span></label>
+        <label><input type="checkbox" id="alert-waiting" checked><span>等待确认</span></label>
+        <label><input type="checkbox" id="alert-error" checked><span>异常</span></label>
+      </div>
+      <button type="button" class="reconnect-button" id="alert-test">测试提醒</button>
+    </details>
+    <p class="panel-note" id="alert-status"></p>
+    <p class="alert-toast" id="alert-toast" role="status" hidden></p>
+  </section>
   </div>
   </div>
   <div class="footer-info">
@@ -1110,6 +1195,8 @@
 </div>
 
 <script src="./status-connection.js"></script>
+<script src="./status-alerts.js"></script>
+<script src="./dashboard-extras.js"></script>
 <script>
 var el = document.getElementById.bind(document);
 var currentSessions = [];
@@ -1118,6 +1205,7 @@ var carouselIndex = 0;
 var carouselTimer = null;
 var lastGoodStatus = null;
 var currentDisplayedState = "syncing";
+var dashboardExtras = window.CodexDashboardExtras.create();
 var lastSyncAt = null;
 var pageLoadTime = Date.now();
 var connectionApi = window.CodexStatusConnection;
@@ -1152,10 +1240,12 @@ var stateLabels = {
 function renderSessionTitle() {
   if (!currentSessions.length) {
     el("thread-title").textContent = "暂无活动对话";
+    dashboardExtras.renderCurrentAction(null);
     return;
   }
   carouselIndex %= currentSessions.length;
   el("thread-title").textContent = currentSessions[carouselIndex].title || "未命名对话";
+  dashboardExtras.renderCurrentAction(currentSessions[carouselIndex]);
 }
 
 function updateSessions(sessions) {
@@ -1177,13 +1267,15 @@ function updateSessions(sessions) {
     }, 4000) : null;
   } else {
     currentSessions = nextSessions;
+    renderSessionTitle();
   }
 }
 
-function renderStatus(data) {
+function renderStatus(data, options) {
   var light = data.light || "yellow";
   var state = data.state || "error";
   currentDisplayedState = state;
+  dashboardExtras.setStatus(data, options && options.cached);
   el("island").className = "island " + state;
   if (window.__setParticleState) window.__setParticleState(state);
   el("session-count").textContent = (data.sessionCount || 0) + " 对话";
@@ -1235,7 +1327,7 @@ function restoreLastGoodSnapshot() {
   if (!snapshot) return;
   lastGoodStatus = snapshot.data;
   lastSyncAt = snapshot.savedAt;
-  renderStatus(lastGoodStatus);
+  renderStatus(lastGoodStatus, { cached: true });
   connectionInfo.updatedAt = lastGoodStatus.updatedAt;
   el("connection-label").textContent = "缓存 · 正在连接";
   el("connection-detail").textContent = "正在显示上次有效数据，尚未确认当前任务状态";
@@ -1349,6 +1441,7 @@ async function pollStatus() {
         } catch (storageError) {}
         failureTracker.recordSuccess();
         renderStatus(data);
+        dashboardExtras.consumeLive(data);
         updateConnectionDiagnostics(data, base, Math.round(performance.now() - requestStarted));
         el("status-time").textContent = "已同步 " + formatSyncTime(lastSyncAt);
         return;
@@ -1360,6 +1453,7 @@ async function pollStatus() {
     }
 
     if (!failureTracker.recordFailure()) return;
+    dashboardExtras.connectionLost();
     renderConnectionState(
       "disconnected",
       "采集端离线",
@@ -1389,43 +1483,7 @@ setInterval(updateUptime, 1000);
 
 // Session list rendering
 function renderSessionList(sessions) {
-  var list = el("session-list");
-  if (!sessions || sessions.length === 0) {
-    list.className = "session-list";
-    return;
-  }
-  list.className = "session-list visible";
-  list.firstElementChild.textContent = sessions.some(function (session) {
-    return session.state === "processing" || session.state === "waiting";
-  }) ? "活跃对话" : "最近任务";
-  // Keep header, clear rest
-  while (list.children.length > 1) list.removeChild(list.lastChild);
-  var now = Date.now();
-  for (var i = 0; i < sessions.length; i++) {
-    var s = sessions[i];
-    var item = document.createElement("div");
-    item.className = "session-item";
-    var dot = document.createElement("span");
-    dot.className = "session-dot " + (s.state || "idle");
-    var info = document.createElement("div");
-    info.className = "session-info";
-    var name = document.createElement("span");
-    name.className = "session-name";
-    name.textContent = s.title || "未命名对话";
-    var time = document.createElement("span");
-    time.className = "session-time";
-    if (s.updatedAt) {
-      var ago = Math.round((now - s.updatedAt) / 1000);
-      if (ago < 60) time.textContent = ago + "秒前";
-      else if (ago < 3600) time.textContent = Math.floor(ago / 60) + "分钟前";
-      else time.textContent = Math.floor(ago / 3600) + "小时前";
-    }
-    info.appendChild(name);
-    info.appendChild(time);
-    item.appendChild(dot);
-    item.appendChild(info);
-    list.appendChild(item);
-  }
+  dashboardExtras.renderSessions(sessions);
 }
 
 // Task duration timer
@@ -1533,41 +1591,7 @@ function formatDuration(ms) {
 }
 
 function renderPlanCountdown() {
-  var info = el("plan-sub-info");
-  var plan = window.__planInfo;
-  if (!info || !plan) {
-    if (info) info.textContent = "";
-    return;
-  }
-  var name = plan.name || plan.email || "";
-  if (plan.renewalDateOnly && plan.renewalDate) {
-    var renewalAt = new Date(plan.renewalDate + "T00:00:00").getTime();
-    var remainingDays = Number.isFinite(renewalAt)
-      ? Math.max(0, Math.floor((renewalAt - Date.now()) / 86400000))
-      : null;
-    var renewalLabel = "下次续订日 " + plan.renewalDate;
-    if (remainingDays !== null) renewalLabel += " · 距续订日约 " + remainingDays + " 天";
-    setPlanText(name, renewalAt > Date.now() ? renewalLabel : "续订时间待同步");
-    return;
-  }
-  if (plan.subscriptionStatus === "renewal_pending") {
-    var refreshedAt = plan.refreshedAt ? new Date(plan.refreshedAt).toLocaleString() : "";
-    var pendingLabel = "续订时间待同步" + (refreshedAt ? "（上次核对 " + refreshedAt + "）" : "");
-    setPlanText(name, pendingLabel);
-    return;
-  }
-  if (!plan.activeUntil) {
-    setPlanText(name, "订阅时间未知");
-    return;
-  }
-  var until = new Date(plan.activeUntil).getTime();
-  if (!Number.isFinite(until)) {
-    setPlanText(name, "订阅时间未知");
-    return;
-  }
-  var diff = until - Date.now();
-  var label = diff > 0 ? "订阅剩余 " + formatDuration(diff) : "续订时间待同步";
-  setPlanText(name, label);
+  dashboardExtras.renderSubscription(window.__planInfo || null);
 }
 
 function updateConnectionAge() {
@@ -1653,20 +1677,14 @@ async function reconnectStatus() {
 el("reconnect-button").addEventListener("click", reconnectStatus);
 setInterval(updateConnectionAge, 1000);
 
-function setPlanText(name, label) {
-  var info = el("plan-sub-info");
-  if (info.children.length !== 2) {
-    info.replaceChildren(document.createElement("span"), document.createElement("span"));
-  }
-  info.children[0].textContent = name;
-  info.children[1].textContent = label;
-}
-
 function renderUsage(data) {
   var card = el("usage-card");
   var ts = data.tokenStats;
   var plan = data.plan;
   window.__planInfo = plan || null;
+  dashboardExtras.renderTrend(ts ? ts.trend : null);
+  renderPlanCountdown();
+  if (!plan) { el("plan-badge").textContent = ""; el("plan-badge").className = "plan-badge"; }
   if (!ts && !plan) { card.style.display = "none"; return; }
   card.style.display = "";
 
@@ -1683,7 +1701,9 @@ function renderUsage(data) {
 
   // Token stats
   if (ts) {
-    el("token-24h").textContent = formatTokens(ts.tokens24h);
+    el("token-24h").textContent = ts.trend ? (ts.trend.status === "loading" ? "统计中" :
+      (ts.trend.status === "partial" ? "至少 " : "") + formatTokens(ts.trend.tokensToday)) : formatTokens(ts.tokens24h);
+    el("token-label").textContent = ts.trend ? "tokens · 今日新增" : "tokens · 近期对话累计";
     var updatedText = data.updatedAt ? " · " + new Date(data.updatedAt).toLocaleTimeString() + " 更新" : "";
     el("token-total").textContent = "累计 " + formatTokens(ts.totalTokens) + " tokens" + updatedText;
 
@@ -1700,6 +1720,7 @@ function renderUsage(data) {
         var name = document.createElement("span");
         name.className = "model-bar-name";
         name.textContent = m.model === "unknown" ? "其他" : m.model;
+        name.title = name.textContent;
         var track = document.createElement("div");
         track.className = "model-bar-track";
         var fill = document.createElement("div");
@@ -1793,7 +1814,7 @@ function updateQuotaCountdown() {
 }
 setInterval(updateQuotaCountdown, 1000);
 updateQuotaCountdown();
-setInterval(renderPlanCountdown, 1000);
+setInterval(function () { dashboardExtras.updateTimers(); }, 1000);
 renderPlanCountdown();
 
 // Particle system

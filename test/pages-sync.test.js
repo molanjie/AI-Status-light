@@ -6,6 +6,12 @@ const test = require("node:test");
 const root = path.resolve(__dirname, "..");
 
 test("published assets match canonical public assets", () => {
+  for (const name of ["status-alerts.js", "dashboard-extras.js"]) {
+    assert.equal(
+      fs.readFileSync(path.join(root, "docs", name), "utf8"),
+      fs.readFileSync(path.join(root, "public", name), "utf8")
+    );
+  }
   assert.equal(
     fs.readFileSync(path.join(root, "docs", "index.html"), "utf8"),
     fs.readFileSync(path.join(root, "public", "index.html"), "utf8")

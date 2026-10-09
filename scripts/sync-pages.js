@@ -5,6 +5,8 @@ const root = path.resolve(__dirname, "..");
 const pairs = [
   ["public/index.html", "docs/index.html"],
   ["public/status-connection.js", "docs/status-connection.js"],
+  ["public/status-alerts.js", "docs/status-alerts.js"],
+  ["public/dashboard-extras.js", "docs/dashboard-extras.js"],
 ];
 
 for (const [source, target] of pairs) {
