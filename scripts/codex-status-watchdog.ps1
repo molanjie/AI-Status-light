@@ -61,7 +61,8 @@ $watchdogAction = {
       [System.IO.File]::WriteAllText($heartbeatPath, $heartbeat, [System.Text.Encoding]::ASCII)
       $localHealthValid = Test-LocalHealthEndpoint -Url $config.localHealthUrl -TimeoutSeconds 3
       $ownedServer = Get-OwnedProcessFromPidFile -PidFile $serverPidFile -ExpectedCommandLineFragments $serverFragments
-      $serverDecision = Get-LocalServerGateDecision -LocalHealthValid $localHealthValid -OwnedServer $ownedServer
+      $serverDecision = Get-LocalServerGateDecision -LocalHealthValid $localHealthValid -OwnedServer $ownedServer `
+        -SourcePaths @($config.serverPath, (Join-Path $config.projectRoot 'codex-status.js'))
 
       if ($serverDecision -eq 'RecoverServer') {
         $replacement = Invoke-OwnedProcessReplacement -StopOwned {

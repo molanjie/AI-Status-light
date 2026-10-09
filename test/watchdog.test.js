@@ -245,6 +245,28 @@ test("owned PID lookup queries exactly the recorded PID and validates its comman
   }
 });
 
+test("verified owned servers reload changed backend code without adopting other listeners", () => {
+  const module = modulePath.replace(/'/g, "''");
+  const source = path.join(root, "codex-status.js").replace(/'/g, "''");
+  const output = powershell(`Import-Module '${module}' -Force; ` +
+    `$old = [pscustomobject]@{ ProcessId=1; CreationDate=[datetime]'2020-01-01' }; ` +
+    `$fresh = [pscustomobject]@{ ProcessId=2; CreationDate=(Get-Date).AddDays(1) }; ` +
+    `Get-LocalServerGateDecision -LocalHealthValid $true -OwnedServer $old -SourcePaths @('${source}'); ` +
+    `Get-LocalServerGateDecision -LocalHealthValid $true -OwnedServer $fresh -SourcePaths @('${source}'); ` +
+    `Get-LocalServerGateDecision -LocalHealthValid $true -OwnedServer $null -SourcePaths @('${source}')`);
+  assert.deepEqual(output.split(/\r?\n/), ["RecoverServer", "OwnedServerReady", "OwnershipConflict"]);
+});
+
+test("public status health accepts new task states and terminal result sessions", () => {
+  const module = modulePath.replace(/'/g, "''");
+  const payload = JSON.stringify({ source: "codex-local", state: "cancelled", light: "green", label: "Cancelled", sessionCount: 1,
+    sessions: [{ title: "Task", state: "cancelled" }], totalThreads: 1, hostname: "host", lastCompletedAt: null, updatedAt: 1785432000000, error: "" });
+  const output = powershell(`$m = Import-Module '${module}' -Force -PassThru; & $m { param($json) $p = $json | ConvertFrom-Json; ` +
+    `[string](Test-PublicStatusPayload $p); $p.state='syncing'; $p.sessions=@(); [string](Test-PublicStatusPayload $p); ` +
+    `$p.state='error'; $p.sessions=@([pscustomobject]@{title='Task';state='error'}); [string](Test-PublicStatusPayload $p) } '${payload}'`);
+  assert.deepEqual(output.split(/\r?\n/), ["True", "True", "True"]);
+});
+
 test("ownership claims distinguish missing, unverifiable, mismatched, and owned processes", () => {
   const escaped = modulePath.replace(/'/g, "''");
   const pidFile = path.join(os.tmpdir(), `codex-status-claim-${process.pid}.pid`);

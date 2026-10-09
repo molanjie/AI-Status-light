@@ -784,7 +784,7 @@ function Test-PublicStatusPayload {
 
   if (
     $Payload.source -ne 'codex-local' -or
-    $Payload.state -notin @('idle', 'processing', 'waiting', 'completed', 'offline', 'error') -or
+    $Payload.state -notin @('idle', 'processing', 'waiting', 'completed', 'cancelled', 'syncing', 'offline', 'error') -or
     $Payload.light -notin @('red', 'yellow', 'green') -or
     $Payload.label -isnot [string] -or
     [string]::IsNullOrWhiteSpace($Payload.label) -or
@@ -808,7 +808,7 @@ function Test-PublicStatusPayload {
       -not (Test-JsonObjectProperty -Value $session -Name 'title') -or
       $session.title -isnot [string] -or
       -not (Test-JsonObjectProperty -Value $session -Name 'state') -or
-      $session.state -notin @('processing', 'waiting', 'completed')
+      $session.state -notin @('processing', 'waiting', 'completed', 'cancelled', 'error')
     ) {
       return $false
     }
@@ -954,7 +954,8 @@ function Get-LocalServerGateDecision {
     [Parameter(Mandatory = $true)]
     [bool]$LocalHealthValid,
     [AllowNull()]
-    [object]$OwnedServer
+    [object]$OwnedServer,
+    [string[]]$SourcePaths = @()
   )
 
   if (-not $LocalHealthValid) {
@@ -962,6 +963,14 @@ function Get-LocalServerGateDecision {
   }
   if ($null -eq $OwnedServer) {
     return 'OwnershipConflict'
+  }
+  if ($null -ne $OwnedServer.PSObject.Properties['CreationDate'] -and $OwnedServer.CreationDate -is [datetime]) {
+    foreach ($sourcePath in $SourcePaths) {
+      if ((Test-Path -LiteralPath $sourcePath -PathType Leaf) -and
+          (Get-Item -LiteralPath $sourcePath).LastWriteTimeUtc -gt $OwnedServer.CreationDate.ToUniversalTime()) {
+        return 'RecoverServer'
+      }
+    }
   }
   return 'OwnedServerReady'
 }

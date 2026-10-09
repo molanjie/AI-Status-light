@@ -190,7 +190,8 @@
   .island.disconnected .activity-bar,
   .island.offline .activity-bar { background: #ffd60a; opacity: 0.72; }
   .island.idle .activity-bar,
-  .island.completed .activity-bar { background: #30d158; opacity: 0.72; }
+  .island.completed .activity-bar,
+  .island.cancelled .activity-bar { background: #30d158; opacity: 0.72; }
   .island.error .activity-bar { background: #ff453a; opacity: 0.72; }
   .lights {
     width: 78px;
@@ -642,6 +643,8 @@
   .session-dot.waiting { background: #ffd60a; box-shadow: 0 0 8px rgba(255,214,10,0.4); }
   .session-dot.completed { background: #30d158; box-shadow: 0 0 8px rgba(48,209,88,0.45); }
   .session-dot.idle { background: #30d158; box-shadow: 0 0 8px rgba(48,209,88,0.4); }
+  .session-dot.cancelled { background: #30d158; }
+  .session-dot.error { background: #ff453a; }
   .session-info {
     flex: 1;
     min-width: 0;
@@ -664,6 +667,34 @@
     font-size: 10px;
     font-variant-numeric: tabular-nums;
   }
+  .history-card, .connection-card {
+    width: 100%;
+    min-width: 0;
+    padding: 14px 18px;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 20px;
+    background: linear-gradient(145deg, rgba(27, 32, 35, 0.88), rgba(10, 13, 15, 0.88));
+  }
+  .panel-header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
+  .panel-title { color: #a5afb5; font-size: 12px; font-weight: 650; }
+  .panel-note, .history-empty { color: #859097; font-size: 11px; line-height: 1.5; }
+  .history-empty { margin-top: 10px; }
+  .history-items { max-height: 310px; overflow-y: auto; margin-top: 8px; }
+  .history-item { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 10px; padding: 10px 0; border-top: 1px solid rgba(255,255,255,0.05); }
+  .history-name { color: #c8cdd0; font-size: 12px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  .history-state { color: #30d158; font-size: 11px; }
+  .history-state.error { display: inline; color: #ff625a; margin: 0; }
+  .history-meta { grid-column: 1 / -1; color: #859097; font-size: 10px; line-height: 1.5; }
+  .connection-card[data-tone="warning"] { border-color: rgba(255,214,10,0.22); }
+  .connection-card[data-tone="error"] { border-color: rgba(255,69,58,0.25); }
+  .connection-card details { margin-top: 8px; color: #929ba1; font-size: 11px; }
+  .connection-card summary { cursor: pointer; width: fit-content; }
+  .connection-card dl { margin-top: 8px; display: grid; grid-template-columns: auto minmax(0,1fr); gap: 6px 12px; line-height: 1.5; }
+  .connection-card dd { overflow-wrap: anywhere; }
+  .reconnect-button { border: 1px solid rgba(255,255,255,0.16); border-radius: 9px; padding: 6px 10px; background: rgba(255,255,255,0.06); color: #d7dde1; font: inherit; font-size: 11px; cursor: pointer; }
+  .reconnect-button:focus-visible, .connection-card summary:focus-visible { outline: 2px solid #ffd60a; outline-offset: 3px; }
+  .reconnect-button:disabled { opacity: 0.55; cursor: wait; }
+  #connection-age { margin-top: 8px; }
   /* Footer info bar */
   .footer-info {
     display: flex;
@@ -1020,6 +1051,29 @@
   <div class="session-list" id="session-list">
     <div class="session-list-header">活跃对话</div>
   </div>
+  <section class="history-card" id="task-history" aria-labelledby="history-heading">
+    <div class="panel-header">
+      <h2 class="panel-title" id="history-heading">任务历史</h2>
+      <span class="panel-note">近 24 小时 · 最近 20 条</span>
+    </div>
+    <p class="history-empty" id="history-empty">暂无可读取的任务结果</p>
+    <div class="history-items" id="history-items"></div>
+  </section>
+  <section class="connection-card" id="connection-card" data-tone="warning" aria-label="连接状态">
+    <div class="panel-header">
+      <span class="panel-title" id="connection-label">正在连接</span>
+      <button class="reconnect-button" id="reconnect-button" type="button">立即重连</button>
+    </div>
+    <p class="panel-note" id="connection-age">尚未获取有效数据</p>
+    <details>
+      <summary>连接诊断</summary>
+      <dl>
+        <dt>采集来源</dt><dd id="connection-source">等待发现服务</dd>
+        <dt>响应耗时</dt><dd id="connection-latency">—</dd>
+        <dt>诊断信息</dt><dd id="connection-detail">正在连接本机服务或公网隧道</dd>
+      </dl>
+    </details>
+  </section>
   <div class="footer-info">
     <span>Codex Status Monitor</span>
     <span class="dot"></span>
@@ -1052,12 +1106,18 @@ var REGISTRY_REQUEST_TIMEOUT_MS = 2500;
 var registryApiBase = "";
 var registryRequestInFlight = false;
 var statusRequestInFlight = false;
+var statusRequestPromise = null;
+var registryRequestPromise = null;
+var reconnectInFlight = false;
+var connectionInfo = { updatedAt: null };
+var historySignature = null;
 var failureTracker = connectionApi.createFailureTracker(3);
 var stateLabels = {
   idle: "空闲",
   processing: "处理中",
   waiting: "等待输入",
   completed: "已完成",
+  cancelled: "已取消",
   syncing: "正在同步",
   disconnected: "采集端离线",
   offline: "离线",
@@ -1120,6 +1180,7 @@ function renderStatus(data) {
   if (data.hostname) el("footer-host").textContent = data.hostname;
   if (typeof updateStats === "function") updateStats(data);
   if (typeof renderUsage === "function") renderUsage(data);
+  renderTaskHistory(data.history);
   if (typeof tcRender === "function") tcRender();
 }
 
@@ -1135,6 +1196,7 @@ function renderConnectionState(state, label, detail, triedUrls) {
     lastCompletedAt: lastGoodStatus ? lastGoodStatus.lastCompletedAt : null,
     tokenStats: lastGoodStatus ? lastGoodStatus.tokenStats : null,
     plan: lastGoodStatus ? lastGoodStatus.plan : null,
+    history: lastGoodStatus ? lastGoodStatus.history : [],
     updatedAt: lastGoodStatus ? lastGoodStatus.updatedAt : null,
     error: ""
   });
@@ -1153,6 +1215,10 @@ function restoreLastGoodSnapshot() {
   lastGoodStatus = snapshot.data;
   lastSyncAt = snapshot.savedAt;
   renderStatus(lastGoodStatus);
+  connectionInfo.updatedAt = lastGoodStatus.updatedAt;
+  el("connection-label").textContent = "缓存 · 正在连接";
+  el("connection-detail").textContent = "正在显示上次有效数据，尚未确认当前任务状态";
+  updateConnectionAge();
   el("status-time").textContent = "上次同步 " + formatSyncTime(lastSyncAt);
 }
 
@@ -1191,7 +1257,11 @@ async function fetchStatusFromApi(apiUrl) {
     controller.abort();
   }, 2500);
   try {
-    return await fetch(apiUrl, { cache: "no-store", signal: controller.signal });
+    var response = await fetch(apiUrl, { cache: "no-store", signal: controller.signal });
+    if (!response.ok) throw new Error("HTTP " + response.status);
+    var data = await response.json();
+    if (!connectionApi.isValidStatus(data)) throw new Error("状态数据格式异常");
+    return data;
   } finally {
     clearTimeout(timeoutId);
   }
@@ -1204,6 +1274,11 @@ function formatSyncTime(ts) {
 async function refreshEndpointRegistry() {
   if (registryRequestInFlight) return;
   registryRequestInFlight = true;
+  registryRequestPromise = loadEndpointRegistry();
+  return registryRequestPromise;
+}
+
+async function loadEndpointRegistry() {
   var controller = new AbortController();
   var timeoutId = setTimeout(function () {
     controller.abort();
@@ -1229,17 +1304,22 @@ async function refreshEndpointRegistry() {
 async function fetchStatus() {
   if (statusRequestInFlight) return;
   statusRequestInFlight = true;
+  statusRequestPromise = pollStatus();
+  return statusRequestPromise;
+}
+
+async function pollStatus() {
   var triedUrls = [];
+  var failures = [];
   try {
     var bases = getStatusApiBases();
     for (var i = 0; i < bases.length; i += 1) {
       var base = bases[i];
       var apiUrl = getStatusApiUrl(base);
       triedUrls.push(apiUrl);
+      var requestStarted = performance.now();
       try {
-        var response = await fetchStatusFromApi(apiUrl);
-        if (!response.ok) throw new Error("HTTP " + response.status);
-        var data = await response.json();
+        var data = await fetchStatusFromApi(apiUrl);
         rememberStatusApiBase(base);
         lastGoodStatus = data;
         lastSyncAt = Date.now();
@@ -1248,9 +1328,14 @@ async function fetchStatus() {
         } catch (storageError) {}
         failureTracker.recordSuccess();
         renderStatus(data);
+        updateConnectionDiagnostics(data, base, Math.round(performance.now() - requestStarted));
         el("status-time").textContent = "已同步 " + formatSyncTime(lastSyncAt);
         return;
-      } catch (error) {}
+      } catch (error) {
+        failures.push(error.name === "AbortError" ? "请求超时" :
+          error.name === "SyntaxError" ? "状态数据格式异常" :
+          /^HTTP \d+$/.test(error.message) || error.message === "状态数据格式异常" ? error.message : "网络请求失败");
+      }
     }
 
     if (!failureTracker.recordFailure()) return;
@@ -1260,6 +1345,7 @@ async function fetchStatus() {
       lastGoodStatus ? "正在显示上次有效状态" : "等待本机恢复连接",
       triedUrls
     );
+    renderConnectionFailure(triedUrls, failures);
   } finally {
     statusRequestInFlight = false;
   }
@@ -1288,6 +1374,9 @@ function renderSessionList(sessions) {
     return;
   }
   list.className = "session-list visible";
+  list.firstElementChild.textContent = sessions.some(function (session) {
+    return session.state === "processing" || session.state === "waiting";
+  }) ? "活跃对话" : "最近任务";
   // Keep header, clear rest
   while (list.children.length > 1) list.removeChild(list.lastChild);
   var now = Date.now();
@@ -1348,7 +1437,10 @@ var stateChangedAt = Date.now();
 
 function updateStats(data) {
   el("stat-total").textContent = data.totalThreads || 0;
-  el("stat-active").textContent = data.sessionCount || 0;
+  var activeSessions = (data.sessions || []).filter(function (session) {
+    return session.state === "processing" || session.state === "waiting";
+  });
+  el("stat-active").textContent = activeSessions.length;
 
   // Calculate idle time
   if (data.lastCompletedAt) {
@@ -1365,12 +1457,9 @@ function updateStats(data) {
   }
 
   // Track task started time for timer
-  if (data.state === "processing" && data.sessions && data.sessions.length > 0) {
-    var started = data.sessions[0].lastStartedAt;
-    if (started && started > 0) currentTaskStartedAt = started;
-  } else {
-    currentTaskStartedAt = null;
-  }
+  var processingSession = activeSessions.find(function (session) { return session.state === "processing"; });
+  currentTaskStartedAt = data.state === "processing" && processingSession && processingSession.lastStartedAt > 0
+    ? processingSession.lastStartedAt : null;
 
   // State history for timeline
   var st = data.state || "offline";
@@ -1458,6 +1547,116 @@ function renderPlanCountdown() {
   var diff = until - Date.now();
   var label = diff > 0 ? "订阅剩余 " + formatDuration(diff) : "续订时间待同步";
   setPlanText(name, label);
+}
+
+function updateConnectionAge() {
+  if (!connectionInfo.updatedAt) {
+    el("connection-age").textContent = "尚未获取有效数据";
+    return;
+  }
+  var seconds = Math.max(0, Math.floor((Date.now() - connectionInfo.updatedAt) / 1000));
+  el("connection-age").textContent = "数据更新于 " + formatSyncTime(connectionInfo.updatedAt) +
+    " · " + (seconds < 60 ? seconds + " 秒前" : Math.floor(seconds / 60) + " 分钟前");
+}
+
+function describeApiSource(base) {
+  try {
+    var url = new URL(base);
+    var local = ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
+    return (local ? "本机服务 · " : "远程服务 · ") + url.host;
+  } catch (error) { return "等待发现服务"; }
+}
+
+function updateConnectionDiagnostics(data, base, latency) {
+  var diagnostics = data.diagnostics || {};
+  var detail = "状态服务正常，已同步任务状态";
+  var tone = "ok";
+  if (data.state === "offline" || diagnostics.code === "codex_offline") {
+    detail = "状态服务已连接，但 Codex 未运行";
+    tone = "warning";
+  } else if (diagnostics.code === "database_unreadable") {
+    detail = "状态服务已连接，但无法读取状态数据库";
+    tone = "error";
+  } else if (diagnostics.code === "rollout_unreadable") {
+    detail = "有 " + (diagnostics.unreadableThreads || 0) + " 个对话日志无法读取，部分状态可能缺失";
+    tone = "warning";
+  } else if (diagnostics.code === "task_stale") {
+    detail = "任务长时间没有更新且缺少结束事件，不能确认是否仍在执行";
+    tone = "warning";
+  } else if (data.state === "error") {
+    detail = "状态服务已连接；任务运行异常，请在 Codex 查看详情";
+    tone = "error";
+  }
+  connectionInfo.updatedAt = data.updatedAt;
+  el("connection-label").textContent = "已连接";
+  el("connection-card").dataset.tone = tone;
+  el("connection-source").textContent = describeApiSource(base);
+  el("connection-latency").textContent = latency + " ms";
+  el("connection-detail").textContent = detail;
+  updateConnectionAge();
+}
+
+function renderConnectionFailure(urls, failures) {
+  var localOnly = urls.length && urls.every(function (url) {
+    try { return ["localhost", "127.0.0.1", "[::1]"].includes(new URL(url).hostname); }
+    catch (error) { return false; }
+  });
+  el("connection-label").textContent = "连接中断";
+  el("connection-card").dataset.tone = "warning";
+  el("connection-latency").textContent = "—";
+  el("connection-detail").textContent = !urls.length ? "尚未发现采集地址，请检查本机服务和公网隧道" :
+    (localOnly ? "本机服务连接失败" : "公网或远程服务连接失败，服务或隧道可能不可达") +
+    "：" + Array.from(new Set(failures)).join("；") + (lastGoodStatus ? "。保留上次有效数据" : "");
+  if (!lastGoodStatus && urls.length) el("connection-source").textContent = describeApiSource(urls[0]);
+  updateConnectionAge();
+}
+
+async function reconnectStatus() {
+  if (reconnectInFlight) return;
+  reconnectInFlight = true;
+  var button = el("reconnect-button");
+  button.disabled = true;
+  button.textContent = "连接中…";
+  try {
+    await statusRequestPromise;
+    await registryRequestPromise;
+    await refreshEndpointRegistry();
+    await statusRequestPromise;
+    await fetchStatus();
+  } finally {
+    reconnectInFlight = false;
+    button.disabled = false;
+    button.textContent = "立即重连";
+  }
+}
+el("reconnect-button").addEventListener("click", reconnectStatus);
+setInterval(updateConnectionAge, 1000);
+
+function renderTaskHistory(history) {
+  var results = Array.isArray(history) ? history.slice(0, 20) : [];
+  var signature = JSON.stringify(results);
+  if (signature === historySignature) return;
+  historySignature = signature;
+  var container = el("history-items");
+  container.replaceChildren();
+  el("history-empty").hidden = results.length > 0;
+  results.forEach(function (result) {
+    var item = document.createElement("div");
+    item.className = "history-item";
+    var title = document.createElement("span");
+    title.className = "history-name";
+    title.textContent = result.title || "未命名对话";
+    title.title = title.textContent;
+    var state = document.createElement("span");
+    state.className = "history-state " + result.state;
+    state.textContent = stateLabels[result.state] || "未知";
+    var meta = document.createElement("span");
+    meta.className = "history-meta";
+    meta.textContent = new Date(result.finishedAt).toLocaleString() + " · " +
+      (result.durationMs == null ? "耗时未知" : "耗时 " + formatDuration(result.durationMs));
+    item.append(title, state, meta);
+    container.appendChild(item);
+  });
 }
 
 function setPlanText(name, label) {
@@ -1697,6 +1896,7 @@ renderPlanCountdown();
 var tcStateColors = {
   idle:       "#32f47e",
   completed:  "#32f47e",
+  cancelled:  "#32f47e",
   processing: "#ff453a",
   waiting:    "#ffd60a",
   syncing:    "#ffd60a",
@@ -1707,6 +1907,7 @@ var tcStateColors = {
 var tcStateLabels = {
   idle:       "空闲",
   completed:  "已完成",
+  cancelled:  "已取消",
   processing: "正在处理",
   waiting:    "等待输入",
   syncing:    "正在同步",
@@ -1833,7 +2034,10 @@ function periodicTimelineRefresh() {
 }
 setInterval(periodicTimelineRefresh, 1000);
 
-restoreLastGoodSnapshot();
+try { restoreLastGoodSnapshot(); } catch (restoreError) {
+  lastGoodStatus = null;
+  lastSyncAt = null;
+}
 refreshEndpointRegistry();
 fetchStatus();
 setInterval(fetchStatus, STATUS_REFRESH_MS);

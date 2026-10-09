@@ -7,7 +7,7 @@ const { StringDecoder } = require("node:string_decoder");
 
 const CODEX_HOME = path.join(process.env.USERPROFILE || process.env.HOME || "", ".codex");
 const ACTIVE_STALE_MS = 30 * 60 * 1000;
-const WAITING_STALE_MS = 5 * 60 * 1000;
+const HISTORY_LIMIT = 20;
 const COMPLETED_WINDOW_MS = 10 * 1000;
 const RECENT_THREAD_MS = 24 * 60 * 60 * 1000;
 const MAX_INITIAL_READ = 32 * 1024 * 1024;
@@ -150,44 +150,95 @@ function getPlanInfo() {
 }
 
 function parseEventLine(line, state) {
-  const isTaskEvent = line.includes('"task_started"') || line.includes('"task_complete"');
-  const isInputRequest = line.includes('"request_user_input"');
-  const isInputResponse = state.waiting && line.includes('"function_call_output"') &&
-    (!state.waitingCallId || line.includes(state.waitingCallId));
-  if (!isTaskEvent && !isInputRequest && !isInputResponse) return;
+  if (!/"(?:task_started|turn_started|task_complete|turn_complete|turn_aborted|error|function_call|function_call_output|exec_approval_request|apply_patch_approval_request|request_user_input|request_permissions|exec_command_begin|patch_apply_begin)"/.test(line)) return;
 
   try {
     const event = JSON.parse(line);
-    const type = event.payload && event.payload.type;
-    const eventTime = Date.parse(event.timestamp) || Date.now();
+    const payload = event.payload || {};
+    const type = payload.type;
+    const eventTime = Date.parse(event.timestamp);
+    if (!Number.isFinite(eventTime)) return;
+    if (event.type !== "event_msg" && event.type !== "response_item") return;
+    const taskEvent = event.type === "event_msg";
+    const callId = payload.call_id || payload.id || "";
 
-    if (type === "task_started") {
+    if (taskEvent && (type === "task_started" || type === "turn_started")) {
+      state.seenTurns = state.seenTurns || new Set();
+      if (eventTime < (state.lastStartedAt || 0) || (payload.turn_id && state.seenTurns.has(payload.turn_id))) return;
+      if (state.turnId && state.turnId === payload.turn_id) return;
+      if (payload.turn_id) rememberBounded(state.seenTurns, payload.turn_id);
       state.active = true;
       state.turnId = event.payload.turn_id || "";
       state.lastStartedAt = eventTime;
-      state.waiting = false;
-      state.waitingCallId = "";
-      state.waitingAt = 0;
-    } else if (type === "task_complete") {
+      state.lastOutcome = "";
+      state.lifecycleUnknown = false;
+      state.resolvedInputs = new Set();
+      clearWaiting(state);
+    } else if (taskEvent && ["task_complete", "turn_complete", "turn_aborted", "error"].includes(type)) {
+      if (state.lastStartedAt && eventTime < state.lastStartedAt) return;
+      if (payload.turn_id && state.turnId && payload.turn_id !== state.turnId) return;
+      const errorInfo = payload.codex_error_info;
+      const errorKind = typeof errorInfo === "string" ? errorInfo : Object.keys(errorInfo || {})[0];
+      if (type === "error" && ["thread_rollback_failed", "active_turn_not_steerable"].includes(errorKind)) return;
+      // A later task_complete can follow the error event for the same failed turn.
+      if (!state.active && state.lastOutcome) return;
+      const outcome = type === "error" || payload.error ? "error"
+        : type === "turn_aborted" ? "cancelled" : "completed";
       state.active = false;
-      state.turnId = "";
-      state.lastCompletedAt = eventTime;
-      state.waiting = false;
-      state.waitingCallId = "";
-      state.waitingAt = 0;
-    } else if (type === "function_call" && event.payload.name === "request_user_input") {
-      state.waiting = true;
-      state.waitingCallId = event.payload.call_id || "";
-      state.waitingAt = eventTime;
-    } else if (type === "function_call_output" && state.waiting &&
-      (!state.waitingCallId || event.payload.call_id === state.waitingCallId)) {
-      state.waiting = false;
-      state.waitingCallId = "";
-      state.waitingAt = 0;
+      state.lifecycleUnknown = false;
+      clearWaiting(state);
+      state.lastOutcome = outcome;
+      state.lastFinishedAt = eventTime;
+      if (outcome === "completed") state.lastCompletedAt = eventTime;
+      const startedAt = state.lastStartedAt || (Number.isFinite(payload.started_at) ? payload.started_at * 1000 : null);
+      state.history = state.history || [];
+      state.history.push({
+        state: outcome,
+        startedAt,
+        finishedAt: eventTime,
+        durationMs: startedAt ? Math.max(0, eventTime - startedAt) : null,
+      });
+      if (state.history.length > HISTORY_LIMIT) state.history.shift();
+    } else if ((event.type === "response_item" && type === "function_call" &&
+        /(?:^|[.:])request_user_input$/.test(payload.name || "")) ||
+        (taskEvent && ["request_user_input", "request_permissions", "exec_approval_request", "apply_patch_approval_request"].includes(type))) {
+      if (eventTime < (state.lastStartedAt || 0) || (!state.active && state.lastOutcome)) return;
+      if (state.resolvedInputs && state.resolvedInputs.has(callId)) return;
+      if (!state.active) state.lifecycleUnknown = true;
+      state.pendingInputs = state.pendingInputs || new Map();
+      state.pendingInputs.set(callId, { at: eventTime, type });
+      refreshWaiting(state);
+    } else if ((event.type === "response_item" && type === "function_call_output") ||
+        (taskEvent && ["exec_command_begin", "patch_apply_begin"].includes(type))) {
+      if (state.pendingInputs) {
+        if (eventTime < (state.lastStartedAt || 0)) return;
+        if (state.pendingInputs.delete(callId) && callId) {
+          state.resolvedInputs = state.resolvedInputs || new Set();
+          rememberBounded(state.resolvedInputs, callId);
+        }
+        refreshWaiting(state);
+      }
     }
   } catch {
     // A partially written final JSONL line will be picked up on the next poll.
   }
+}
+
+function rememberBounded(set, value) {
+  set.add(value);
+  if (set.size > 100) set.delete(set.values().next().value);
+}
+
+function clearWaiting(state) {
+  state.pendingInputs = new Map();
+  refreshWaiting(state);
+}
+
+function refreshWaiting(state) {
+  const first = state.pendingInputs.entries().next().value;
+  state.waiting = Boolean(first);
+  state.waitingCallId = first ? first[0] : "";
+  state.waitingAt = first ? first[1].at : 0;
 }
 
 function updateRolloutState(thread) {
@@ -208,6 +259,11 @@ function updateRolloutState(thread) {
       waiting: false,
       waitingCallId: "",
       waitingAt: 0,
+      pendingInputs: new Map(),
+      history: [],
+      lastOutcome: "",
+      lastFinishedAt: 0,
+      lifecycleUnknown: stat.size > MAX_INITIAL_READ,
     };
   }
 
@@ -241,14 +297,33 @@ function updateRolloutState(thread) {
 
   rolloutCache.set(filePath, cached);
   const now = Date.now();
+  const waiting = cached.waiting && now - cached.waitingAt < RECENT_THREAD_MS;
+  const active = cached.active && now - Math.max(cached.lastStartedAt, stat.mtimeMs) < ACTIVE_STALE_MS;
   return {
     title: normalizeTitle(thread.title),
-    active: cached.active && now - Math.max(cached.lastStartedAt, stat.mtimeMs) < ACTIVE_STALE_MS,
-    waiting: cached.waiting && now - cached.waitingAt < WAITING_STALE_MS,
+    active,
+    waiting,
+    stale: !waiting && (cached.lifecycleUnknown || (cached.active && !active)),
     lastStartedAt: cached.lastStartedAt,
     lastCompletedAt: cached.lastCompletedAt,
+    lastFinishedAt: cached.lastFinishedAt,
+    lastOutcome: cached.lastOutcome,
+    history: cached.history.map(result => ({ ...result, title: normalizeTitle(thread.title) })),
     updatedAt: stat.mtimeMs,
   };
+}
+
+function collectRolloutStates(rows) {
+  const threads = [];
+  let unreadableThreads = 0;
+  for (const row of rows) {
+    try {
+      threads.push(updateRolloutState(row));
+    } catch {
+      unreadableThreads += 1;
+    }
+  }
+  return { threads, unreadableThreads };
 }
 
 function normalizeTitle(title) {
@@ -292,151 +367,129 @@ function isCodexRunning(now = Date.now()) {
   }
 }
 
-function buildCodexStatus(running, threads, totalThreads, now = Date.now()) {
+function buildCodexStatus(running, threads, totalThreads, now = Date.now(), options = {}) {
   const allCompletedAt = threads
     .map((t) => t.lastCompletedAt)
     .filter((t) => t > 0);
   const lastCompletedAt = allCompletedAt.length > 0 ? Math.max(...allCompletedAt) : null;
 
-  if (!running) {
-    return {
-      source: "codex-local",
-      state: "offline",
-      light: "yellow",
-      label: "Codex 未运行",
-      sessionCount: 0,
-      sessions: [],
-      totalThreads,
-      hostname: os.hostname(),
-      lastCompletedAt,
-      updatedAt: now,
-      error: "",
-    };
-  }
-
   const activeSessions = threads.filter((thread) => thread.active && !thread.waiting);
   const waitingSessions = threads.filter((thread) => thread.waiting);
-  const completedSessions = threads.filter((thread) =>
-    !thread.active && thread.lastCompletedAt && now - thread.lastCompletedAt < COMPLETED_WINDOW_MS
-  );
+  const terminalSessions = threads.filter(thread => {
+    const finishedAt = thread.lastFinishedAt || thread.lastCompletedAt;
+    return !thread.active && !thread.waiting && finishedAt && now >= finishedAt && now - finishedAt < COMPLETED_WINDOW_MS;
+  }).sort((a, b) => (b.lastFinishedAt || b.lastCompletedAt) - (a.lastFinishedAt || a.lastCompletedAt));
+  const unreadableThreads = options.unreadableThreads || 0;
+  const staleTasks = threads.filter(thread => thread.stale).length;
+  const history = threads.flatMap(thread => thread.history || [])
+    .filter(result => result.finishedAt <= now && result.finishedAt >= now - RECENT_THREAD_MS)
+    .sort((a, b) => b.finishedAt - a.finishedAt)
+    .slice(0, HISTORY_LIMIT);
+  const value = {
+    source: "codex-local",
+    state: running ? "idle" : "offline",
+    light: running ? "green" : "yellow",
+    label: running ? "空闲" : "Codex 未运行",
+    sessionCount: 0,
+    sessions: [],
+    history,
+    totalThreads,
+    hostname: os.hostname(),
+    lastCompletedAt,
+    updatedAt: now,
+    error: "",
+    diagnostics: {
+      state: unreadableThreads || staleTasks ? "degraded" : "ok",
+      code: !running ? "codex_offline" : unreadableThreads ? "rollout_unreadable" : staleTasks ? "task_stale" : "ready",
+      readableThreads: threads.length,
+      unreadableThreads,
+      staleTasks,
+    },
+  };
+  if (!running) return value;
 
   const toPublicSession = (thread, state) => ({
     title: thread.title,
     state,
     lastStartedAt: thread.lastStartedAt,
     lastCompletedAt: thread.lastCompletedAt,
-    updatedAt: Math.max(thread.lastStartedAt, thread.lastCompletedAt, thread.updatedAt),
+    updatedAt: Math.max(thread.lastStartedAt || 0, thread.lastFinishedAt || 0, thread.lastCompletedAt || 0, thread.updatedAt || 0),
   });
 
   if (activeSessions.length > 0 || waitingSessions.length > 0) {
     const processing = activeSessions.length > 0;
-    const sessions = [
+    value.sessions = [
       ...activeSessions.map((thread) => toPublicSession(thread, "processing")),
       ...waitingSessions.map((thread) => toPublicSession(thread, "waiting")),
     ]
       .sort((a, b) => b.updatedAt - a.updatedAt);
-    return {
-      source: "codex-local",
-      state: processing ? "processing" : "waiting",
-      light: processing ? "red" : "yellow",
-      label: processing ? "正在处理" : "等待输入",
-      sessionCount: sessions.length,
-      sessions,
-      totalThreads,
-      hostname: os.hostname(),
-      lastCompletedAt,
-      updatedAt: now,
-      error: "",
-    };
+    value.state = processing ? "processing" : "waiting";
+    value.light = processing ? "red" : "yellow";
+    value.label = processing ? "正在处理" : "等待输入";
+  } else if (unreadableThreads) {
+    value.state = "error";
+    value.light = "red";
+    value.label = "状态读取异常";
+    value.error = "部分对话日志无法读取，不能确认全部任务状态";
+  } else if (staleTasks) {
+    value.state = "syncing";
+    value.light = "yellow";
+    value.label = "任务状态待确认";
+  } else if (terminalSessions.length) {
+    value.state = terminalSessions[0].lastOutcome || "completed";
+    value.light = value.state === "error" ? "red" : "green";
+    value.label = { completed: "已完成", cancelled: "已取消", error: "运行异常" }[value.state];
+    value.sessions = terminalSessions.map(thread => toPublicSession(thread, thread.lastOutcome || "completed"));
+    if (value.state === "error") value.error = "任务运行失败，请在 Codex 中查看错误详情";
   }
-
-  if (completedSessions.length > 0) {
-    const sessions = completedSessions
-      .map((thread) => toPublicSession(thread, "completed"))
-      .sort((a, b) => b.updatedAt - a.updatedAt);
-    return {
-      source: "codex-local",
-      state: "completed",
-      light: "green",
-      label: "已完成",
-      sessionCount: sessions.length,
-      sessions,
-      totalThreads,
-      hostname: os.hostname(),
-      lastCompletedAt,
-      updatedAt: now,
-      error: "",
-    };
-  }
-
-  return {
-    source: "codex-local",
-    state: "idle",
-    light: "green",
-    label: "空闲",
-    sessionCount: 0,
-    sessions: [],
-    totalThreads,
-    hostname: os.hostname(),
-    lastCompletedAt,
-    updatedAt: now,
-    error: "",
-  };
+  value.sessionCount = value.sessions.length;
+  return value;
 }
 
-function readCodexStatus() {
-  const now = Date.now();
-  if (statusCache.value && now < statusCache.expiresAt) return statusCache.value;
+function readCodexStatus(options = {}) {
+  const now = options.now || Date.now();
+  const injected = Object.keys(options).length > 0;
+  if (!injected && statusCache.value && now < statusCache.expiresAt) return statusCache.value;
 
-  const running = isCodexRunning(now);
-  const planInfo = getPlanInfo();
-  if (!running) {
-    const value = buildCodexStatus(false, [], 0, now);
-    value.plan = planInfo;
-    statusCache = { value, expiresAt: now + STATUS_CACHE_MS };
-    return value;
-  }
+  const running = Object.hasOwn(options, "running") ? options.running : isCodexRunning(now);
+  const planInfo = Object.hasOwn(options, "planInfo") ? options.planInfo : getPlanInfo();
+  let value;
 
   try {
-    const dbPath = findLatestStateDatabase(now);
-    const threadRows = getRecentThreads(dbPath);
-    const tokenStats = getTokenStats(dbPath);
+    const dbPath = Object.hasOwn(options, "threadRows") ? null : findLatestStateDatabase(now);
+    const threadRows = options.threadRows || getRecentThreads(dbPath);
+    const tokenStats = Object.hasOwn(options, "tokenStats") ? options.tokenStats : getTokenStats(dbPath);
     cleanupRolloutCache(threadRows);
-    const threads = threadRows.flatMap((thread) => {
-      try {
-        return [updateRolloutState(thread)];
-      } catch {
-        return [];
-      }
-    });
-    const value = buildCodexStatus(true, threads, threadRows.length, now);
+    const { threads, unreadableThreads } = collectRolloutStates(threadRows);
+    value = buildCodexStatus(running, threads, threadRows.length, now, { unreadableThreads });
     value.tokenStats = tokenStats;
     value.plan = planInfo;
-    statusCache = { value, expiresAt: now + STATUS_CACHE_MS };
-    return value;
   } catch (err) {
-    const value = {
+    value = {
       source: "codex-local",
-      state: "error",
-      light: "red",
-      label: "运行异常",
+      state: running ? "error" : "offline",
+      light: running ? "red" : "yellow",
+      label: running ? "运行异常" : "Codex 未运行",
       sessionCount: 0,
       sessions: [],
       totalThreads: 0,
       hostname: os.hostname(),
       lastCompletedAt: null,
       updatedAt: now,
-      error: err.message,
+      error: "无法读取 Codex 状态数据库，请检查本机采集服务",
+      history: !injected && statusCache.value ? statusCache.value.history || [] : [],
+      diagnostics: { state: "error", code: "database_unreadable" },
       plan: planInfo,
     };
-    statusCache = { value, expiresAt: now + STATUS_CACHE_MS };
-    return value;
   }
+  if (!injected) statusCache = { value, expiresAt: now + STATUS_CACHE_MS };
+  return value;
 }
 
 module.exports = {
   applySubscriptionRenewalDate,
   buildCodexStatus,
+  collectRolloutStates,
   findLatestStateDatabase,
   normalizePlanInfo,
   parseEventLine,

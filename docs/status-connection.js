@@ -47,7 +47,7 @@
   function loadSnapshot(storage) {
     try {
       const parsed = JSON.parse(storage.getItem(SNAPSHOT_KEY));
-      if (!parsed || !parsed.data || !Number.isFinite(parsed.savedAt)) return null;
+      if (!parsed || !isValidStatus(parsed.data) || !Number.isFinite(parsed.savedAt)) return null;
       return { data: parsed.data, savedAt: parsed.savedAt };
     } catch (error) {
       return null;
@@ -55,7 +55,7 @@
   }
 
   function saveSnapshot(storage, data, savedAt) {
-    if (!data || !Number.isFinite(savedAt)) return;
+    if (!isValidStatus(data) || !Number.isFinite(savedAt)) return;
     try {
       storage.setItem(SNAPSHOT_KEY, JSON.stringify({ data, savedAt }));
     } catch (error) {}
@@ -77,6 +77,40 @@
     };
   }
 
+  function isValidStatus(data) {
+    function object(value) { return value && typeof value === "object" && !Array.isArray(value); }
+    function optionalStrings(value, fields) {
+      return fields.every(field => value[field] == null || typeof value[field] === "string");
+    }
+    function optionalNumbers(value, fields) {
+      return fields.every(field => value[field] == null || (Number.isFinite(value[field]) && value[field] >= 0));
+    }
+    const states = ["idle", "processing", "waiting", "completed", "cancelled", "syncing", "disconnected", "offline", "error"];
+    if (!data || !states.includes(data.state) || !["red", "yellow", "green"].includes(data.light)) return false;
+    if (typeof data.label !== "string" || !Number.isInteger(data.sessionCount) || data.sessionCount < 0) return false;
+    if (!Number.isFinite(data.updatedAt) || data.updatedAt <= 0 || !Array.isArray(data.sessions)) return false;
+    if (!data.sessions.every(session => object(session) && typeof session.title === "string" && states.includes(session.state) &&
+      optionalNumbers(session, ["updatedAt", "lastStartedAt", "lastCompletedAt"]))) return false;
+    if (!optionalStrings(data, ["error", "hostname", "source"])) return false;
+    if (data.tokenStats != null) {
+      const stats = data.tokenStats;
+      if (!object(stats) || !optionalNumbers(stats, ["tokens24h", "totalTokens", "h5remaining", "w7remaining", "tokens5h", "tokens7d", "h5limit", "w7limit", "h5recoverAt", "w7recoverAt"])) return false;
+      if (stats.byModel !== undefined && (!Array.isArray(stats.byModel) || !stats.byModel.every(model =>
+        object(model) && typeof model.model === "string" && Number.isFinite(model.tokens) && model.tokens >= 0
+      ))) return false;
+    }
+    if (data.plan != null && (!object(data.plan) || !optionalStrings(data.plan,
+      ["plan", "name", "email", "activeUntil", "activeSince", "renewalDate", "refreshedAt", "subscriptionStatus", "subscriptionSource"]))) return false;
+    if (data.diagnostics != null && (!object(data.diagnostics) || !optionalStrings(data.diagnostics, ["code", "state"]) ||
+      !optionalNumbers(data.diagnostics, ["readableThreads", "unreadableThreads", "staleTasks"]))) return false;
+    if (data.history !== undefined && (!Array.isArray(data.history) || !data.history.every(result =>
+      result && typeof result.title === "string" && ["completed", "cancelled", "error"].includes(result.state) &&
+      Number.isFinite(result.finishedAt) && result.finishedAt > 0 &&
+      (result.durationMs == null || (Number.isFinite(result.durationMs) && result.durationMs >= 0))
+    ))) return false;
+    return true;
+  }
+
   return {
     SNAPSHOT_KEY,
     normalizeApiBase,
@@ -85,5 +119,6 @@
     loadSnapshot,
     saveSnapshot,
     createFailureTracker,
+    isValidStatus,
   };
 });

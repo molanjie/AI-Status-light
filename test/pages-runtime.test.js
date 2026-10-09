@@ -442,3 +442,141 @@ test("a stalled registry request aborts and a later 30-second refresh discovers 
   assert.equal(new URL(runtime.requestCounts.statusUrls[0]).origin, newBase);
   assert.equal(await runtime.page.evaluate(() => registryRequestInFlight), false);
 });
+
+test("task results render literal titles, durations, and survive disconnection", async t => {
+  let available = true;
+  const status = validStatus({ history: [
+    { title: '<img src="x">', state: "completed", startedAt: FIXED_NOW - 20000, finishedAt: FIXED_NOW - 10000, durationMs: 10000 },
+    { title: "Cancelled task", state: "cancelled", finishedAt: FIXED_NOW - 30000, durationMs: null },
+    { title: "Failed task", state: "error", finishedAt: FIXED_NOW - 40000, durationMs: 1200 },
+  ] });
+  const runtime = await openStatusPage({ onStatusRequest(route) {
+    return jsonResponse(route, available ? 200 : 503, available ? status : {});
+  } });
+  t.after(() => runtime.close());
+  await runtime.page.waitForFunction(() => lastGoodStatus !== null);
+  assert.equal(await runtime.page.locator("#task-history .history-item").count(), 3);
+  assert.equal(await runtime.page.locator("#task-history img").count(), 0);
+  assert.match(await runtime.page.locator("#task-history").textContent(), /<img src="x">.*已完成.*10秒/s);
+  available = false;
+  for (let i = 0; i < 3; i++) await runtime.page.evaluate(() => fetchStatus());
+  assert.equal(await runtime.page.locator("#task-history .history-item").count(), 3);
+  assert.match(await runtime.page.locator("#connection-detail").textContent(), /HTTP 503/);
+});
+
+test("invalid successful JSON cannot poison the snapshot or visible data", async t => {
+  let invalid = false;
+  const runtime = await openStatusPage({ onStatusRequest(route) {
+    return jsonResponse(route, 200, invalid ? { state: "processing", sessions: "invalid" } : validStatus());
+  } });
+  t.after(() => runtime.close());
+  await runtime.page.waitForFunction(() => lastGoodStatus !== null);
+  invalid = true;
+  for (let i = 0; i < 3; i++) await runtime.page.evaluate(() => fetchStatus());
+  assert.equal(await runtime.page.evaluate(() => lastGoodStatus.sessionCount), 1);
+  assert.match(await runtime.page.locator("#connection-detail").textContent(), /数据格式/);
+  assert.deepEqual(runtime.pageErrors.map(e => e.message), []);
+});
+
+test("a stalled response body times out and a later poll can recover", async t => {
+  const runtime = await openStatusPage({ onStatusRequest(route) {
+    return jsonResponse(route, 200, validStatus());
+  } });
+  t.after(() => runtime.close());
+  await runtime.page.waitForFunction(() => lastGoodStatus !== null);
+  await runtime.page.evaluate(() => {
+    window.__originalFetch = window.fetch;
+    window.fetch = (url, init) => Promise.resolve({ ok: true, json: () => new Promise((resolve, reject) => {
+      init.signal.addEventListener("abort", () => reject(new DOMException("timeout", "AbortError")), { once: true });
+    }) });
+    window.__bodyRequest = fetchStatus();
+  });
+  await runtime.page.waitForFunction(() => statusRequestInFlight === false, null, { timeout: 4500 });
+  await runtime.page.evaluate(async () => { window.fetch = window.__originalFetch; await fetchStatus(); });
+  assert.equal(await runtime.page.locator("#status-label").textContent(), "正在处理");
+});
+
+test("manual reconnect recovers without clearing cached sessions or history", async t => {
+  let available = false;
+  const status = validStatus({ history: [{ title: "Previous", state: "completed", finishedAt: FIXED_NOW - 10000, durationMs: 3000 }] });
+  const runtime = await openStatusPage({ snapshot: { data: status, savedAt: FIXED_NOW - 60000 }, onStatusRequest(route) {
+    return jsonResponse(route, available ? 200 : 503, available ? status : {});
+  } });
+  t.after(() => runtime.close());
+  await runtime.page.waitForFunction(() => statusRequestInFlight === false);
+  for (let i = 0; i < 2; i++) await runtime.page.evaluate(() => fetchStatus());
+  available = true;
+  await runtime.page.locator("#reconnect-button").click();
+  await runtime.page.waitForFunction(() => document.getElementById("connection-label").textContent === "已连接");
+  assert.equal(await runtime.page.locator("#task-history .history-item").count(), 1);
+  assert.equal(await runtime.page.evaluate(() => failureTracker.count()), 0);
+});
+
+test("diagnostics distinguish an offline Codex from a collector read failure", async t => {
+  const runtime = await openStatusPage();
+  t.after(() => runtime.close());
+  await runtime.page.evaluate(status => {
+    lastGoodStatus = status;
+    updateConnectionDiagnostics(status, "http://127.0.0.1:3456", 15);
+  }, validStatus({ state: "offline", light: "yellow", label: "Codex 未运行", sessions: [], sessionCount: 0, diagnostics: { code: "codex_offline" } }));
+  assert.match(await runtime.page.locator("#connection-detail").textContent(), /服务已连接.*Codex 未运行/);
+  await runtime.page.evaluate(status => updateConnectionDiagnostics(status, "https://collector.test", 12), validStatus({
+    state: "error", diagnostics: { code: "database_unreadable" }, error: "数据库无法读取",
+  }));
+  assert.match(await runtime.page.locator("#connection-detail").textContent(), /状态数据库/);
+});
+
+test("history and diagnostics fit mobile and desktop without moving the top card", async t => {
+  const status = validStatus({ history: [{ title: "Long task title ".repeat(40), state: "completed", finishedAt: FIXED_NOW - 10000, durationMs: 500000 }] });
+  const runtime = await openStatusPage({ onStatusRequest: route => jsonResponse(route, 200, status) });
+  t.after(() => runtime.close());
+  await runtime.page.waitForFunction(() => lastGoodStatus !== null);
+  for (const width of [320, 390, 1280]) {
+    await runtime.page.setViewportSize({ width, height: 700 });
+    const layout = await runtime.page.evaluate(() => ({
+      overflow: document.documentElement.scrollWidth > window.innerWidth,
+      top: document.getElementById("island").getBoundingClientRect().top,
+      floating: getComputedStyle(document.getElementById("traffic-capsule")).display,
+    }));
+    assert.deepEqual(layout, { overflow: false, top: 24, floating: "none" });
+  }
+});
+
+test("manual reconnect queues behind an in-flight poll rather than ignoring the click", async t => {
+  const gate = deferred();
+  const runtime = await openStatusPage({ async onStatusRequest(route, count) {
+    if (count === 1) await gate.promise;
+    return jsonResponse(route, 200, validStatus());
+  } });
+  t.after(async () => { gate.resolve(); await runtime.close(); });
+  await waitFor(() => runtime.requestCounts.status === 1, "initial poll not started");
+  await runtime.page.locator("#reconnect-button").click();
+  assert.equal(await runtime.page.locator("#reconnect-button").isDisabled(), true);
+  gate.resolve();
+  await runtime.page.waitForFunction(() => !reconnectInFlight && !statusRequestInFlight);
+  assert.equal(runtime.requestCounts.status, 2);
+});
+
+test("completed tasks are not counted active and a waiting session cannot drive the running timer", async t => {
+  const runtime = await openStatusPage();
+  t.after(() => runtime.close());
+  await runtime.page.evaluate(status => updateStats(status), validStatus({
+    state: "completed", sessions: [{ title: "Done", state: "completed" }],
+  }));
+  assert.equal(await runtime.page.locator("#stat-active").textContent(), "0");
+  await runtime.page.evaluate(status => updateStats(status), validStatus({
+    sessions: [
+      { title: "Waiting", state: "waiting", lastStartedAt: FIXED_NOW - 100000 },
+      { title: "Working", state: "processing", lastStartedAt: FIXED_NOW - 20000 },
+    ], sessionCount: 2,
+  }));
+  assert.equal(await runtime.page.evaluate(() => currentTaskStartedAt), FIXED_NOW - 20000);
+});
+
+test("malformed optional fields in cached data cannot abort initial polling", async t => {
+  const runtime = await openStatusPage({ snapshot: { data: validStatus({ tokenStats: { byModel: [null] } }), savedAt: FIXED_NOW } });
+  t.after(() => runtime.close());
+  await waitFor(() => runtime.requestCounts.status > 0 || runtime.pageErrors.length > 0, "startup did not run");
+  assert.deepEqual(runtime.pageErrors.map(e => e.message), []);
+  assert.equal(runtime.requestCounts.status, 1);
+});

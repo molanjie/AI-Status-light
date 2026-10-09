@@ -66,7 +66,7 @@ test("orders explicit, registry, stored, and local candidates without duplicates
 
 test("round-trips the last good snapshot and rejects malformed data", () => {
   const storage = memoryStorage();
-  const data = { state: "processing", sessionCount: 2 };
+  const data = { state: "processing", light: "red", label: "处理中", sessionCount: 0, sessions: [], updatedAt: 1785432000000 };
   connection.saveSnapshot(storage, data, 1785432000000);
   assert.deepEqual(connection.loadSnapshot(storage), {
     data,
@@ -96,4 +96,37 @@ test("prefers the local page origin over tunnel discovery unless explicitly over
     registryBase: "https://live.trycloudflare.com",
   }), ["https://manual.example", "http://127.0.0.1:3456", "https://live.trycloudflare.com"]);
   assert.deepEqual(connection.buildApiCandidates({ pageOrigin: "https://molanjie.github.io" }), []);
+});
+
+test("validates status and history before replacing a good snapshot", () => {
+  assert.equal(typeof connection.isValidStatus, "function");
+  if (!connection.isValidStatus) return;
+  const good = { state: "idle", light: "green", label: "空闲", sessionCount: 0, sessions: [], updatedAt: 1785432000000 };
+  assert.equal(connection.isValidStatus(good), true);
+  assert.equal(connection.isValidStatus({ ...good, state: "unknown" }), false);
+  assert.equal(connection.isValidStatus({ ...good, sessions: [{ title: {}, state: "processing" }] }), false);
+  assert.equal(connection.isValidStatus({ ...good, history: [{ state: "completed", title: "A", finishedAt: "bad" }] }), false);
+  assert.equal(connection.isValidStatus({ ...good, updatedAt: -1 }), false);
+});
+
+test("malformed cached status cannot replace a valid stored snapshot", () => {
+  const valid = { state: "idle", light: "green", label: "空闲", sessionCount: 0, sessions: [], updatedAt: 1785432000000 };
+  const storage = memoryStorage();
+  connection.saveSnapshot(storage, valid, 1785432000000);
+  connection.saveSnapshot(storage, { state: "invalid" }, 1785432000001);
+  assert.equal(connection.loadSnapshot(storage).data.state, "idle");
+  const corrupted = memoryStorage({ codex_status_last_good_v1: JSON.stringify({ data: { state: "processing", sessions: {} }, savedAt: 1785432000000 }) });
+  assert.equal(connection.loadSnapshot(corrupted), null);
+});
+
+test("optional renderer data is validated before cache and render", () => {
+  const status = { state: "idle", light: "green", label: "空闲", sessionCount: 0, sessions: [], updatedAt: 1785432000000 };
+  for (const bad of [
+    { tokenStats: { byModel: [null] } },
+    { tokenStats: { byModel: {} } },
+    { tokenStats: { byModel: [{ model: "x", tokens: "bad" }] } },
+    { plan: { name: {} } },
+    { diagnostics: [] },
+    { error: {} },
+  ]) assert.equal(connection.isValidStatus({ ...status, ...bad }), false);
 });
