@@ -667,7 +667,7 @@
     font-size: 10px;
     font-variant-numeric: tabular-nums;
   }
-  .history-card, .connection-card {
+  .connection-card {
     width: 100%;
     min-width: 0;
     padding: 14px 18px;
@@ -677,14 +677,7 @@
   }
   .panel-header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
   .panel-title { color: #a5afb5; font-size: 12px; font-weight: 650; }
-  .panel-note, .history-empty { color: #859097; font-size: 11px; line-height: 1.5; }
-  .history-empty { margin-top: 10px; }
-  .history-items { max-height: 310px; overflow-y: auto; margin-top: 8px; }
-  .history-item { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 10px; padding: 10px 0; border-top: 1px solid rgba(255,255,255,0.05); }
-  .history-name { color: #c8cdd0; font-size: 12px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-  .history-state { color: #30d158; font-size: 11px; }
-  .history-state.error { display: inline; color: #ff625a; margin: 0; }
-  .history-meta { grid-column: 1 / -1; color: #859097; font-size: 10px; line-height: 1.5; }
+  .panel-note { color: #859097; font-size: 11px; line-height: 1.5; }
   .connection-card[data-tone="warning"] { border-color: rgba(255,214,10,0.22); }
   .connection-card[data-tone="error"] { border-color: rgba(255,69,58,0.25); }
   .connection-card details { margin-top: 8px; color: #929ba1; font-size: 11px; }
@@ -1051,14 +1044,6 @@
   <div class="session-list" id="session-list">
     <div class="session-list-header">活跃对话</div>
   </div>
-  <section class="history-card" id="task-history" aria-labelledby="history-heading">
-    <div class="panel-header">
-      <h2 class="panel-title" id="history-heading">任务历史</h2>
-      <span class="panel-note">近 24 小时 · 最近 20 条</span>
-    </div>
-    <p class="history-empty" id="history-empty">暂无可读取的任务结果</p>
-    <div class="history-items" id="history-items"></div>
-  </section>
   <section class="connection-card" id="connection-card" data-tone="warning" aria-label="连接状态">
     <div class="panel-header">
       <span class="panel-title" id="connection-label">正在连接</span>
@@ -1110,7 +1095,6 @@ var statusRequestPromise = null;
 var registryRequestPromise = null;
 var reconnectInFlight = false;
 var connectionInfo = { updatedAt: null };
-var historySignature = null;
 var failureTracker = connectionApi.createFailureTracker(3);
 var stateLabels = {
   idle: "空闲",
@@ -1180,7 +1164,6 @@ function renderStatus(data) {
   if (data.hostname) el("footer-host").textContent = data.hostname;
   if (typeof updateStats === "function") updateStats(data);
   if (typeof renderUsage === "function") renderUsage(data);
-  renderTaskHistory(data.history);
   if (typeof tcRender === "function") tcRender();
 }
 
@@ -1196,7 +1179,6 @@ function renderConnectionState(state, label, detail, triedUrls) {
     lastCompletedAt: lastGoodStatus ? lastGoodStatus.lastCompletedAt : null,
     tokenStats: lastGoodStatus ? lastGoodStatus.tokenStats : null,
     plan: lastGoodStatus ? lastGoodStatus.plan : null,
-    history: lastGoodStatus ? lastGoodStatus.history : [],
     updatedAt: lastGoodStatus ? lastGoodStatus.updatedAt : null,
     error: ""
   });
@@ -1631,33 +1613,6 @@ async function reconnectStatus() {
 }
 el("reconnect-button").addEventListener("click", reconnectStatus);
 setInterval(updateConnectionAge, 1000);
-
-function renderTaskHistory(history) {
-  var results = Array.isArray(history) ? history.slice(0, 20) : [];
-  var signature = JSON.stringify(results);
-  if (signature === historySignature) return;
-  historySignature = signature;
-  var container = el("history-items");
-  container.replaceChildren();
-  el("history-empty").hidden = results.length > 0;
-  results.forEach(function (result) {
-    var item = document.createElement("div");
-    item.className = "history-item";
-    var title = document.createElement("span");
-    title.className = "history-name";
-    title.textContent = result.title || "未命名对话";
-    title.title = title.textContent;
-    var state = document.createElement("span");
-    state.className = "history-state " + result.state;
-    state.textContent = stateLabels[result.state] || "未知";
-    var meta = document.createElement("span");
-    meta.className = "history-meta";
-    meta.textContent = new Date(result.finishedAt).toLocaleString() + " · " +
-      (result.durationMs == null ? "耗时未知" : "耗时 " + formatDuration(result.durationMs));
-    item.append(title, state, meta);
-    container.appendChild(item);
-  });
-}
 
 function setPlanText(name, label) {
   var info = el("plan-sub-info");

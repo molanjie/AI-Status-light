@@ -35,20 +35,16 @@ or operation resumes, or the turn ends. Nonblocking async questions and
 recoverable stream/tool errors do not stop the processing state. Unreadable
 logs and stale tasks are explicitly diagnosed instead of reported as idle.
 
-## History And Connection Diagnostics
+## Connection Diagnostics
 
-Task history shows up to 20 completed, cancelled, or failed turns from
-available unarchived logs updated within the last 24 hours. It includes the
-current conversation title, result, completion time, and duration when known.
-The collector reconstructs it from existing JSONL logs after restart; it does
-not maintain a separate copy of conversation content. Initial replay reads
-at most the last 32 MiB per log, so older results outside that tail can be absent.
+The dashboard does not display task history. Existing collector result
+metadata remains compatible with older clients and lifecycle replay.
 
 Connection diagnostics show the collector source, complete-response latency,
 data age, and whether Codex is closed or the collector cannot read its data.
 A remote network failure cannot prove whether the computer or the tunnel is
 offline; the dashboard reports that uncertainty. The reconnect button refreshes
-endpoint discovery and retries without erasing the last valid snapshot/history.
+endpoint discovery and retries without erasing the last valid snapshot.
 Invalid JSON/status data is rejected, and the 2.5-second timeout covers both
 headers and the JSON response body.
 

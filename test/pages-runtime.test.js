@@ -443,7 +443,7 @@ test("a stalled registry request aborts and a later 30-second refresh discovers 
   assert.equal(await runtime.page.evaluate(() => registryRequestInFlight), false);
 });
 
-test("task results render literal titles, durations, and survive disconnection", async t => {
+test("dashboard omits task history even when the API includes it", async t => {
   let available = true;
   const status = validStatus({ history: [
     { title: '<img src="x">', state: "completed", startedAt: FIXED_NOW - 20000, finishedAt: FIXED_NOW - 10000, durationMs: 10000 },
@@ -455,12 +455,13 @@ test("task results render literal titles, durations, and survive disconnection",
   } });
   t.after(() => runtime.close());
   await runtime.page.waitForFunction(() => lastGoodStatus !== null);
-  assert.equal(await runtime.page.locator("#task-history .history-item").count(), 3);
-  assert.equal(await runtime.page.locator("#task-history img").count(), 0);
-  assert.match(await runtime.page.locator("#task-history").textContent(), /<img src="x">.*已完成.*10秒/s);
+  assert.equal(await runtime.page.locator("#task-history, .history-card, .history-item").count(), 0);
+  assert.doesNotMatch(await runtime.page.locator("body").textContent(), /任务历史|Cancelled task|Failed task/);
+  assert.equal(await runtime.page.locator("#connection-label").textContent(), "已连接");
   available = false;
   for (let i = 0; i < 3; i++) await runtime.page.evaluate(() => fetchStatus());
-  assert.equal(await runtime.page.locator("#task-history .history-item").count(), 3);
+  assert.equal(await runtime.page.locator("#task-history").count(), 0);
+  assert.equal(await runtime.page.locator("#session-count").textContent(), "1 对话");
   assert.match(await runtime.page.locator("#connection-detail").textContent(), /HTTP 503/);
 });
 
@@ -496,7 +497,7 @@ test("a stalled response body times out and a later poll can recover", async t =
   assert.equal(await runtime.page.locator("#status-label").textContent(), "正在处理");
 });
 
-test("manual reconnect recovers without clearing cached sessions or history", async t => {
+test("manual reconnect retains sessions without displaying task history", async t => {
   let available = false;
   const status = validStatus({ history: [{ title: "Previous", state: "completed", finishedAt: FIXED_NOW - 10000, durationMs: 3000 }] });
   const runtime = await openStatusPage({ snapshot: { data: status, savedAt: FIXED_NOW - 60000 }, onStatusRequest(route) {
@@ -508,7 +509,8 @@ test("manual reconnect recovers without clearing cached sessions or history", as
   available = true;
   await runtime.page.locator("#reconnect-button").click();
   await runtime.page.waitForFunction(() => document.getElementById("connection-label").textContent === "已连接");
-  assert.equal(await runtime.page.locator("#task-history .history-item").count(), 1);
+  assert.equal(await runtime.page.locator("#task-history").count(), 0);
+  assert.equal(await runtime.page.locator("#session-count").textContent(), "1 对话");
   assert.equal(await runtime.page.evaluate(() => failureTracker.count()), 0);
 });
 
@@ -526,7 +528,7 @@ test("diagnostics distinguish an offline Codex from a collector read failure", a
   assert.match(await runtime.page.locator("#connection-detail").textContent(), /状态数据库/);
 });
 
-test("history and diagnostics fit mobile and desktop without moving the top card", async t => {
+test("dashboard without task history fits mobile and desktop without moving the top card", async t => {
   const status = validStatus({ history: [{ title: "Long task title ".repeat(40), state: "completed", finishedAt: FIXED_NOW - 10000, durationMs: 500000 }] });
   const runtime = await openStatusPage({ onStatusRequest: route => jsonResponse(route, 200, status) });
   t.after(() => runtime.close());
